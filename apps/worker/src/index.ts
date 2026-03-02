@@ -1,6 +1,5 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
-import { logger } from "hono/logger";
 import type { AppEnv } from "./env";
 import { adminAuth } from "./middleware/adminAuth";
 import authRoutes from "./routes/auth";
@@ -17,46 +16,6 @@ import tokenRoutes from "./routes/tokens";
 import usageRoutes from "./routes/usage";
 
 const app = new Hono<AppEnv>({ strict: false });
-
-app.use("*", async (c, next) => {
-	const method = c.req.method;
-	const path = c.req.path;
-	const contentType = c.req.header("content-type") ?? "";
-	if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
-		const raw = c.req.raw.clone();
-		let bodyType = "unknown";
-		let bodyKeys: string[] = [];
-		let bodySize = 0;
-		try {
-			const payload = await raw.json();
-			bodyType = "json";
-			if (payload && typeof payload === "object" && !Array.isArray(payload)) {
-				bodyKeys = Object.keys(payload);
-			}
-		} catch {
-			try {
-				const text = await raw.text();
-				bodyType = "text";
-				bodySize = text.length;
-			} catch {
-				bodyType = "unreadable";
-			}
-		}
-		console.log("[request]", {
-			method,
-			path,
-			content_type: contentType,
-			body_type: bodyType,
-			body_keys: bodyKeys,
-			body_size: bodySize,
-		});
-	} else {
-		console.log("[request]", { method, path });
-	}
-	await next();
-});
-
-app.use("*", logger());
 app.use(
 	"/api/*",
 	cors({
@@ -121,6 +80,28 @@ app.route("/api/group", newapiGroupRoutes);
 
 app.route("/v1", proxyRoutes);
 app.route("/v1beta", proxyRoutes);
+
+app.onError((err, c) => {
+	console.error("[app:error]", {
+		method: c.req.method,
+		path: c.req.path,
+		message: err.message,
+		stack: err.stack,
+	});
+
+	if (
+		c.req.path === "/api" ||
+		c.req.path.startsWith("/api/") ||
+		c.req.path === "/v1" ||
+		c.req.path.startsWith("/v1/") ||
+		c.req.path === "/v1beta" ||
+		c.req.path.startsWith("/v1beta/")
+	) {
+		return c.json({ error: "Internal Server Error" }, 500);
+	}
+
+	return c.text("Internal Server Error", 500);
+});
 
 app.notFound(async (c) => {
 	const path = c.req.path;

@@ -17,6 +17,30 @@
 
 ### 微调
 
+- **[worker/proxy]**: 请求日志改为安全采样并补充上游失败异常日志，便于定位 Claude 请求故障
+  - 类型: 微调（无方案包）
+  - 文件: apps/worker/src/index.ts, apps/worker/src/routes/proxy.ts
+- **[worker/proxy]**: 上游请求新增超时中断（默认 30s），避免代理请求卡住“有进没出”
+  - 类型: 微调（无方案包）
+  - 文件: apps/worker/src/routes/proxy.ts, apps/worker/src/env.ts, apps/worker/wrangler.toml
+- **[worker/proxy]**: 候选通道改为“模型匹配优先、同提供商次优、全通道兜底”并补充筛选日志
+  - 类型: 微调（无方案包）
+  - 文件: apps/worker/src/routes/proxy.ts, tests/worker/channel-metadata.test.ts
+- **[worker/proxy]**: 跨提供商且无显式模型映射时自动选择通道已声明模型，提升上下游互转可用性
+  - 类型: 微调（无方案包）
+  - 文件: apps/worker/src/routes/proxy.ts, tests/worker/channel-metadata.test.ts
+- **[worker/proxy]**: 自动模型兜底改为学习型复用（成功后记忆映射），并增加失败通道退避与 `PROXY_RETRY_ON_429` 开关降低长耗时重试
+  - 类型: 微调（无方案包）
+  - 文件: apps/worker/src/routes/proxy.ts, apps/worker/src/env.ts, apps/worker/wrangler.toml, tests/worker/channel-metadata.test.ts
+- **[worker/proxy]**: 通道选择不再受下游协议约束，并新增 OpenAI→Anthropic 响应转换（含 SSE）修复上游成功但客户端无输出
+  - 类型: 微调（无方案包）
+  - 文件: apps/worker/src/routes/proxy.ts, tests/worker/channel-metadata.test.ts
+- **[worker/proxy]**: 按“以上游为准”收敛，移除学习映射/失败退避/429重试开关，保留确定性转换与超时保护
+  - 类型: 微调（无方案包）
+  - 文件: apps/worker/src/routes/proxy.ts, apps/worker/src/env.ts, apps/worker/wrangler.toml
+- **[worker/proxy]**: 新增响应适配器注册层（OpenAI↔Anthropic，JSON+SSE），并将上游模型决策与下游协议完全解耦
+  - 类型: 微调（无方案包）
+  - 文件: apps/worker/src/services/chat-response-adapter.ts, apps/worker/src/routes/proxy.ts, tests/worker/provider-transform.test.ts, tests/worker/channel-metadata.test.ts
 - **[checkin]**: 自动签到不再依赖站点启用状态
   - 类型: 微调（无方案包）
   - 文件: apps/worker/src/services/checkin-runner.ts, tests/worker/checkin-runner.test.ts, helloagents/modules/sites.md

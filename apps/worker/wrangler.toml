@@ -4,8 +4,7 @@ compatibility_date = "2026-02-14"
 
 [vars]
 CORS_ORIGIN = "http://localhost:5173"
-PROXY_RETRY_ROUNDS = "2"
-PROXY_RETRY_DELAY_MS = "200"
+PROXY_UPSTREAM_TIMEOUT_MS = "30000"
 
 [[d1_databases]]
 binding = "DB"
