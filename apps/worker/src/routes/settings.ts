@@ -8,11 +8,13 @@ import {
 	getCheckinScheduleTime,
 	getRetentionDays,
 	getSessionTtlHours,
+	getModelCapabilityTtlHours,
 	isAdminPasswordSet,
 	setAdminPasswordHash,
 	setCheckinScheduleTime,
 	setRetentionDays,
 	setSessionTtlHours,
+	setModelCapabilityTtlHours,
 } from "../services/settings";
 import { sha256Hex } from "../utils/crypto";
 import { jsonError } from "../utils/http";
@@ -27,11 +29,13 @@ settings.get("/", async (c) => {
 	const sessionTtlHours = await getSessionTtlHours(c.env.DB);
 	const adminPasswordSet = await isAdminPasswordSet(c.env.DB);
 	const checkinScheduleTime = await getCheckinScheduleTime(c.env.DB);
+	const modelCapabilityTtlHours = await getModelCapabilityTtlHours(c.env.DB);
 	return c.json({
 		log_retention_days: retention,
 		session_ttl_hours: sessionTtlHours,
 		admin_password_set: adminPasswordSet,
 		checkin_schedule_time: checkinScheduleTime,
+		model_capability_ttl_hours: modelCapabilityTtlHours,
 	});
 });
 
@@ -73,6 +77,20 @@ settings.put("/", async (c) => {
 			);
 		}
 		await setSessionTtlHours(c.env.DB, hours);
+		touched = true;
+	}
+
+	if (body.model_capability_ttl_hours !== undefined) {
+		const hours = Number(body.model_capability_ttl_hours);
+		if (Number.isNaN(hours) || hours < 1) {
+			return jsonError(
+				c,
+				400,
+				"invalid_model_capability_ttl_hours",
+				"invalid_model_capability_ttl_hours",
+			);
+		}
+		await setModelCapabilityTtlHours(c.env.DB, hours);
 		touched = true;
 	}
 

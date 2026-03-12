@@ -17,6 +17,12 @@
 
 ### 微调
 
+- **[worker/models]**: 引入通道模型能力表并基于“模型广场测试结果+可配置TTL（默认2小时）”进行模型发布与路由匹配
+  - 类型: 微调（无方案包）
+  - 文件: apps/worker/migrations/0004_add_channel_model_capabilities.sql, apps/worker/src/services/channel-model-capabilities.ts, apps/worker/src/services/channel-testing.ts, apps/worker/src/services/settings.ts, apps/worker/src/routes/settings.ts, apps/worker/src/routes/models.ts, apps/worker/src/routes/newapiUsers.ts, apps/worker/src/routes/proxy.ts, tests/worker/channel-model-capabilities.test.ts, tests/worker/newapi.test.ts, helloagents/modules/settings.md, helloagents/modules/models.md, helloagents/modules/proxy.md
+- **[worker/proxy]**: 移除临时调试日志（请求入口/出口与上游响应汇总）
+  - 类型: 微调（无方案包）
+  - 文件: apps/worker/src/index.ts, apps/worker/src/routes/proxy.ts
 - **[worker/proxy]**: 请求日志改为安全采样并补充上游失败异常日志，便于定位 Claude 请求故障
   - 类型: 微调（无方案包）
   - 文件: apps/worker/src/index.ts, apps/worker/src/routes/proxy.ts

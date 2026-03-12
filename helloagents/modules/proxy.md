@@ -26,7 +26,9 @@
 - 允许 `metadata_json.endpoint_overrides` 覆盖 chat/embedding/image 上游地址（可用 `{model}` 占位）
 - 允许 `metadata_json.header_override` 与 `metadata_json.query_override` 注入额外上游请求头/查询参数
 - Anthropic 默认注入 `anthropic-version=2023-06-01`，可通过 `header_override` 覆盖
+- 路由时优先使用模型能力表（TTL 内测试成功的模型），无能力记录时回退渠道声明模型列表
 
 ## 依赖关系
 - `channels` / `tokens` / `usage_logs` 表
 - `tokenAuth` 中间件
+- `channel_model_capabilities` 表

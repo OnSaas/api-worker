@@ -2,6 +2,7 @@ import type { D1Database } from "@cloudflare/workers-types";
 import { nowIso } from "../utils/time";
 import { normalizeBaseUrl } from "../utils/url";
 import { modelsToJson, normalizeModelsInput } from "./channel-models";
+import { upsertChannelModelCapabilities } from "./channel-model-capabilities";
 
 export type ChannelTestResult = {
 	ok: boolean;
@@ -158,5 +159,8 @@ export async function updateChannelTestResult(
 			.run();
 	} else {
 		await stmt.bind(status, now, result.elapsed, nowIso(), id).run();
+	}
+	if (result.ok && result.models && result.models.length > 0) {
+		await upsertChannelModelCapabilities(db, id, result.models, now);
 	}
 }

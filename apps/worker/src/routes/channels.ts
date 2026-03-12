@@ -201,6 +201,7 @@ channels.post("/:id/test", async (c) => {
 	await updateChannelTestResult(c.env.DB, id, {
 		ok: true,
 		elapsed: summary.elapsed,
+		models: summary.models,
 		modelsJson: modelsToJson(summary.models),
 	});
 

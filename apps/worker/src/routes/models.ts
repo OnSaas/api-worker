@@ -1,7 +1,8 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../env";
-import { extractModels } from "../services/channel-models";
+import { listVerifiedModelEntries } from "../services/channel-model-capabilities";
 import { listActiveChannels } from "../services/channel-repo";
+import { getModelCapabilityTtlHours } from "../services/settings";
 
 const models = new Hono<AppEnv>();
 
@@ -10,7 +11,13 @@ const models = new Hono<AppEnv>();
  */
 models.get("/", async (c) => {
 	const channels = await listActiveChannels(c.env.DB);
-	const entries = channels.flatMap((channel) => extractModels(channel));
+	const ttlHours = await getModelCapabilityTtlHours(c.env.DB);
+	const ttlSeconds = Math.max(1, Math.floor(ttlHours)) * 60 * 60;
+	const entries = await listVerifiedModelEntries(
+		c.env.DB,
+		channels.map((channel) => ({ id: channel.id, name: channel.name })),
+		ttlSeconds,
+	);
 
 	const map = new Map<
 		string,

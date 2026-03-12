@@ -17,6 +17,8 @@ import {
 	createWeightedOrder,
 	extractModels,
 } from "../services/channels";
+import { listVerifiedModelsByChannel } from "../services/channel-model-capabilities";
+import { getModelCapabilityTtlHours } from "../services/settings";
 import {
 	applyGeminiModelToPath,
 	buildUpstreamChatRequest,
@@ -55,25 +57,35 @@ type ExecutionContextLike = {
 
 function channelSupportsModel(
 	channel: ChannelRecord,
-	model?: string | null,
+	model: string | null,
+	verifiedModelsByChannel: Map<string, Set<string>>,
 ): boolean {
 	if (!model) {
 		return true;
 	}
-	const models = extractModels(channel);
-	if (models.some((entry) => entry.id === model)) {
+	const verified = verifiedModelsByChannel.get(channel.id);
+	const metadata = parseChannelMetadata(channel.metadata_json);
+	const mapped = resolveMappedModel(metadata.model_mapping, model);
+	if (verified && verified.size > 0) {
+		if (mapped && verified.has(mapped)) {
+			return true;
+		}
+		return verified.has(model);
+	}
+	const declaredModels = extractModels(channel).map((entry) => entry.id);
+	if (mapped && declaredModels.includes(mapped)) {
 		return true;
 	}
-	const metadata = parseChannelMetadata(channel.metadata_json);
-	return Boolean(metadata.model_mapping[model] ?? metadata.model_mapping["*"]);
+	return declaredModels.includes(model);
 }
 
 export function selectCandidateChannels(
 	allowedChannels: ChannelRecord[],
 	downstreamModel: string | null,
+	verifiedModelsByChannel: Map<string, Set<string>>,
 ): ChannelRecord[] {
 	const modelChannels = allowedChannels.filter((channel) =>
-		channelSupportsModel(channel, downstreamModel),
+		channelSupportsModel(channel, downstreamModel, verifiedModelsByChannel),
 	);
 	if (modelChannels.length > 0) {
 		return modelChannels;
@@ -100,13 +112,17 @@ export function resolveUpstreamModelForChannel(
 	channel: ChannelRecord,
 	metadata: ChannelMetadata,
 	downstreamModel: string | null,
+	verifiedModelsByChannel: Map<string, Set<string>>,
 ): { model: string | null; autoMapped: boolean } {
 	const mapped = resolveMappedModel(metadata.model_mapping, downstreamModel);
 	if (!downstreamModel || hasExplicitModelMapping(metadata, downstreamModel)) {
 		return { model: mapped, autoMapped: false };
 	}
 
-	const declaredModels = extractModels(channel).map((entry) => entry.id);
+	const verified = verifiedModelsByChannel.get(channel.id);
+	const declaredModels = verified
+		? Array.from(verified)
+		: extractModels(channel).map((entry) => entry.id);
 	if (declaredModels.length === 0) {
 		return { model: mapped, autoMapped: false };
 	}
@@ -295,7 +311,18 @@ proxy.all("/*", tokenAuth, async (c) => {
 		callTokenMap.set(row.channel_id, list);
 	}
 	const allowedChannels = filterAllowedChannels(activeChannels, tokenRecord);
-	const candidates = selectCandidateChannels(allowedChannels, downstreamModel);
+	const ttlHours = await getModelCapabilityTtlHours(c.env.DB);
+	const ttlSeconds = Math.max(1, Math.floor(ttlHours)) * 60 * 60;
+	const verifiedModelsByChannel = await listVerifiedModelsByChannel(
+		c.env.DB,
+		allowedChannels.map((channel) => channel.id),
+		ttlSeconds,
+	);
+	const candidates = selectCandidateChannels(
+		allowedChannels,
+		downstreamModel,
+		verifiedModelsByChannel,
+	);
 
 	if (candidates.length === 0 && allowedChannels.length > 0) {
 		console.warn("[proxy:no_compatible_channels]", {
@@ -308,12 +335,12 @@ proxy.all("/*", tokenAuth, async (c) => {
 	if (candidates.length === 0) {
 		return jsonError(c, 503, "no_available_channels", "no_available_channels");
 	}
-
-	const ordered = createWeightedOrder(candidates);
 	const targetPath = c.req.path;
 	const querySuffix = c.req.url.includes("?")
 		? `?${c.req.url.split("?")[1]}`
 		: "";
+
+	const ordered = createWeightedOrder(candidates);
 	const upstreamTimeoutMs = Math.max(
 		1000,
 		Number(c.env.PROXY_UPSTREAM_TIMEOUT_MS ?? "30000"),
@@ -333,6 +360,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 			channel,
 			metadata,
 			downstreamModel,
+			verifiedModelsByChannel,
 		);
 		const upstreamModel = resolvedModel.model;
 		if (

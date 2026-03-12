@@ -383,6 +383,7 @@ newapi.get("/test/:id", async (c) => {
 	await updateChannelTestResult(c.env.DB, id, {
 		ok: true,
 		elapsed: result.elapsed,
+		models: result.models,
 	});
 
 	return newApiSuccess(c, undefined, "测试成功");
@@ -412,6 +413,7 @@ newapi.post("/test", async (c) => {
 	await updateChannelTestResult(c.env.DB, String(id), {
 		ok: true,
 		elapsed: result.elapsed,
+		models: result.models,
 	});
 	return newApiSuccess(c, undefined, "测试成功");
 });
