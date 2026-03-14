@@ -79,40 +79,63 @@ export const buildPageItems = (current: number, total: number): PageItem[] => {
 	});
 };
 
-export type UsageSummary = {
-	total: number;
-	success: number;
-	failed: number;
-	errorRate: number;
-	avgLatencyMs: number | null;
-	totalTokens: number;
+const truncateText = (value: string | null | undefined, max = 80) => {
+	if (!value) {
+		return null;
+	}
+	const trimmed = value.trim();
+	if (!trimmed) {
+		return null;
+	}
+	return trimmed.length > max ? `${trimmed.slice(0, max)}...` : trimmed;
 };
 
-export const summarizeUsageLogs = (logs: UsageLog[]): UsageSummary => {
-	const total = logs.length;
-	const success = logs.filter((log) => log.status === "ok").length;
-	const failed = total - success;
-	let latencySum = 0;
-	let latencyCount = 0;
-	let totalTokens = 0;
-	for (const log of logs) {
-		const latency = log.latency_ms;
-		if (latency !== null && latency !== undefined && !Number.isNaN(latency)) {
-			latencySum += latency;
-			latencyCount += 1;
-		}
-		if (log.total_tokens !== null && log.total_tokens !== undefined) {
-			totalTokens += log.total_tokens;
-		} else {
-			totalTokens += (log.prompt_tokens ?? 0) + (log.completion_tokens ?? 0);
-		}
+const describeError = (status?: number | null, code?: string | null) => {
+	const normalized = (code ?? "").toLowerCase();
+	if (status === 401 || status === 403) {
+		return "鉴权失败";
 	}
+	if (status === 429 || normalized.includes("rate")) {
+		return "触发限流";
+	}
+	if (
+		normalized.includes("insufficient") ||
+		normalized.includes("quota") ||
+		normalized.includes("balance")
+	) {
+		return "余额不足";
+	}
+	if (normalized.includes("model")) {
+		return "模型不可用";
+	}
+	return null;
+};
+
+export type UsageStatusDetail = {
+	label: string;
+	message: string | null;
+	tone: "success" | "error";
+};
+
+export const buildUsageStatusDetail = (log: UsageLog): UsageStatusDetail => {
+	if (log.status === "ok") {
+		return { label: "成功", message: null, tone: "success" };
+	}
+	const parts: string[] = [];
+	if (log.upstream_status !== null && log.upstream_status !== undefined) {
+		parts.push(String(log.upstream_status));
+	}
+	if (log.error_code) {
+		parts.push(log.error_code);
+	}
+	const hint = describeError(log.upstream_status, log.error_code ?? null);
+	if (hint) {
+		parts.push(hint);
+	}
+	const suffix = parts.length > 0 ? ` (${parts.join(" / ")})` : "";
 	return {
-		total,
-		success,
-		failed,
-		errorRate: total > 0 ? (failed / total) * 100 : 0,
-		avgLatencyMs: latencyCount > 0 ? latencySum / latencyCount : null,
-		totalTokens,
+		label: `失败${suffix}`,
+		message: truncateText(log.error_message),
+		tone: "error",
 	};
 };

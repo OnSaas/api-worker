@@ -74,6 +74,54 @@ function scheduleDbWrite(
 	}
 }
 
+type ErrorDetails = {
+	upstreamStatus: number | null;
+	errorCode: string | null;
+	errorMessage: string | null;
+};
+
+function truncateMessage(value: string | null, max = 240): string | null {
+	if (!value) {
+		return null;
+	}
+	const trimmed = value.trim();
+	if (!trimmed) {
+		return null;
+	}
+	return trimmed.length > max ? `${trimmed.slice(0, max)}...` : trimmed;
+}
+
+async function extractErrorDetails(
+	response: Response,
+): Promise<{ errorCode: string | null; errorMessage: string | null }> {
+	const contentType = response.headers.get("content-type") ?? "";
+	if (contentType.includes("application/json")) {
+		const payload = await response.clone().json().catch(() => null);
+		if (payload && typeof payload === "object") {
+			const raw = payload as Record<string, unknown>;
+			const error = (raw.error ?? raw) as Record<string, unknown>;
+			const errorCode =
+				typeof error.code === "string"
+					? error.code
+					: typeof error.type === "string"
+						? error.type
+						: null;
+			const errorMessage =
+				typeof error.message === "string"
+					? error.message
+					: typeof raw.message === "string"
+						? raw.message
+						: null;
+			return {
+				errorCode,
+				errorMessage: truncateMessage(errorMessage),
+			};
+		}
+	}
+	const text = await response.clone().text().catch(() => "");
+	return { errorCode: null, errorMessage: truncateMessage(text) };
+}
+
 function channelSupportsModel(
 	channel: ChannelRecord,
 	model: string | null,
@@ -402,6 +450,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 	let lastResponse: Response | null = null;
 	let lastChannel: ChannelRecord | null = null;
 	let lastRequestPath = targetPath;
+	let lastErrorDetails: ErrorDetails | null = null;
 	const start = Date.now();
 	let selectedChannel: ChannelRecord | null = null;
 	let selectedUpstreamProvider: ProviderType | null = null;
@@ -649,6 +698,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 				selectedChannel = channel;
 				selectedUpstreamProvider = upstreamProvider;
 				selectedUpstreamModel = upstreamModel;
+				lastErrorDetails = null;
 				if (recordModel) {
 					scheduleDbWrite(
 						c,
@@ -662,6 +712,12 @@ proxy.all("/*", tokenAuth, async (c) => {
 				}
 				break;
 			}
+			const errorInfo = await extractErrorDetails(response);
+			lastErrorDetails = {
+				upstreamStatus: response.status,
+				errorCode: errorInfo.errorCode,
+				errorMessage: errorInfo.errorMessage,
+			};
 			if (recordModel) {
 				scheduleDbWrite(
 					c,
@@ -688,6 +744,13 @@ proxy.all("/*", tokenAuth, async (c) => {
 				reason: isTimeout ? "timeout" : "exception",
 				error: error instanceof Error ? error.message : String(error),
 			});
+			lastErrorDetails = {
+				upstreamStatus: null,
+				errorCode: isTimeout ? "timeout" : "exception",
+				errorMessage: truncateMessage(
+					error instanceof Error ? error.message : String(error),
+				),
+			};
 			if (recordModel) {
 				scheduleDbWrite(
 					c,
@@ -732,12 +795,23 @@ proxy.all("/*", tokenAuth, async (c) => {
 			stream: isStream,
 			reasoningEffort,
 			status: "error",
+			upstreamStatus: lastErrorDetails?.upstreamStatus ?? null,
+			errorCode: lastErrorDetails?.errorCode ?? "upstream_unavailable",
+			errorMessage: lastErrorDetails?.errorMessage ?? "upstream_unavailable",
 		});
 		return jsonError(c, 502, "upstream_unavailable", "upstream_unavailable");
 	}
 
 	const channelForUsage = selectedChannel ?? lastChannel;
 	if (channelForUsage && lastResponse) {
+		const errorDetails =
+			lastResponse.ok || selectedChannel
+				? null
+				: lastErrorDetails ?? {
+						upstreamStatus: lastResponse.status,
+						errorCode: null,
+						errorMessage: null,
+					};
 		const record = async (
 			usage: NormalizedUsage | null,
 			firstTokenLatencyMs?: number | null,
@@ -763,6 +837,13 @@ proxy.all("/*", tokenAuth, async (c) => {
 				stream: isStream,
 				reasoningEffort,
 				status: lastResponse.ok ? "ok" : "error",
+				upstreamStatus: lastResponse.ok
+					? null
+					: errorDetails?.upstreamStatus ?? lastResponse.status,
+				errorCode: lastResponse.ok ? null : errorDetails?.errorCode ?? null,
+				errorMessage: lastResponse.ok
+					? null
+					: errorDetails?.errorMessage ?? null,
 			});
 		};
 		const headerUsage = parseUsageFromHeaders(lastResponse.headers);

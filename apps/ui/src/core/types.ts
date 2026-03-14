@@ -60,6 +60,9 @@ export type UsageLog = {
 	stream?: boolean | number | null;
 	reasoning_effort?: string | number | null;
 	status: string;
+	upstream_status?: number | null;
+	error_code?: string | null;
+	error_message?: string | null;
 	created_at: string;
 };
 

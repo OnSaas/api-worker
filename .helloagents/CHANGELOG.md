@@ -26,9 +26,9 @@
 - **[proxy]**: 失败判定简化为非 2xx/超时即失败
   - 方案: [202603141749_usage-summary](archive/2026-03/202603141749_usage-summary/)
   - 文件: apps/worker/src/routes/proxy.ts
-- **[admin-ui/usage]**: 使用日志新增概述卡片（总量/成功/失败/错误率/平均延迟）
-  - 方案: [202603141749_usage-summary](archive/2026-03/202603141749_usage-summary/)
-  - 文件: apps/ui/src/core/utils.ts, apps/ui/src/features/UsageView.tsx, tests/ui/usage.test.ts, .helloagents/modules/usage.md, .helloagents/modules/admin-ui.md
+- **[usage/proxy]**: 使用日志记录上游失败详情并在日志状态列展示
+  - 方案: [202603141815_usage-log-status](archive/2026-03/202603141815_usage-log-status/)
+  - 文件: apps/worker/migrations/0005_add_usage_error_fields.sql, apps/worker/src/db/schema.sql, apps/worker/src/services/usage.ts, apps/worker/src/routes/proxy.ts, apps/ui/src/core/types.ts, apps/ui/src/core/utils.ts, apps/ui/src/features/UsageView.tsx, tests/ui/usage-status.test.ts, .helloagents/modules/usage.md, .helloagents/modules/admin-ui.md
 - **[worker/proxy]**: 移除临时调试日志（请求入口/出口与上游响应汇总）
   - 类型: 微调（无方案包）
   - 文件: apps/worker/src/index.ts, apps/worker/src/routes/proxy.ts

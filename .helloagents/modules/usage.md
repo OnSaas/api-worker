@@ -14,7 +14,7 @@
 - 查询结果附带渠道与令牌名称
 - usage_logs 记录输入/输出 tokens、首 token 延迟、流式标记与推理强度
 - 推理强度来自请求体 `reasoning` / `reasoning_effort` 字段
-- 前端使用日志列表计算概述（总量/成功/失败/错误率/平均延迟）
+- usage_logs 记录上游失败详情（status/code/message），用于日志状态展示
 
 ## 依赖关系
 - `usage_logs` 表

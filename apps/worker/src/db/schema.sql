@@ -65,6 +65,9 @@ CREATE TABLE IF NOT EXISTS usage_logs (
   stream INTEGER,
   reasoning_effort TEXT,
   status TEXT,
+  upstream_status INTEGER,
+  error_code TEXT,
+  error_message TEXT,
   created_at TEXT NOT NULL
 );
 
