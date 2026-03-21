@@ -25,6 +25,12 @@ const streamUsageModes = [
 	{ value: "off", label: "关闭", hint: "仅记录基础" },
 ] as const;
 
+const runtimeEventLevelOptions = [
+	{ value: "info", label: "Info" },
+	{ value: "warning", label: "Warning" },
+	{ value: "error", label: "Error" },
+] as const;
+
 /**
  * Renders the settings view.
  *
@@ -153,6 +159,71 @@ export const SettingsView = ({
 									onFormChange({ log_retention_days: target?.value ?? "" });
 								}}
 							/>
+						</div>
+						<div class="app-settings-row">
+							<div class="app-settings-row__main">
+								<label
+									class="app-settings-row__label"
+									for="runtime-event-retention"
+								>
+									系统日志保留天数
+								</label>
+								<p class="app-settings-row__hint">
+									用于系统日志模块，按天自动清理。
+								</p>
+							</div>
+							<Input
+								class="app-settings-row__control app-settings-row__control--compact"
+								id="runtime-event-retention"
+								name="runtime_event_retention_days"
+								type="number"
+								min="1"
+								value={settingsForm.runtime_event_retention_days}
+								onInput={(event) => {
+									const target = event.currentTarget as HTMLInputElement | null;
+									onFormChange({
+										runtime_event_retention_days: target?.value ?? "",
+									});
+								}}
+							/>
+						</div>
+						<div class="app-settings-row app-settings-row--stack">
+							<div class="app-settings-row__main">
+								<span class="app-settings-row__label">系统日志写入等级</span>
+								<p class="app-settings-row__hint">
+									可不选；不选表示完全关闭系统日志写入。
+								</p>
+							</div>
+							<div class="app-segment app-settings-row__control app-settings-row__control--full">
+								{runtimeEventLevelOptions.map((option) => {
+									const active = settingsForm.runtime_event_levels.includes(
+										option.value,
+									);
+									return (
+										<button
+											aria-pressed={active}
+											class={`app-segment__button ${
+												active ? "app-segment__button--active" : ""
+											}`}
+											key={option.value}
+											type="button"
+											onClick={() => {
+												const next = active
+													? settingsForm.runtime_event_levels.filter(
+															(level) => level !== option.value,
+														)
+													: [
+															...settingsForm.runtime_event_levels,
+															option.value,
+														];
+												onFormChange({ runtime_event_levels: next });
+											}}
+										>
+											<span>{option.label}</span>
+										</button>
+									);
+								})}
+							</div>
 						</div>
 						<div class="app-settings-row">
 							<div class="app-settings-row__main">

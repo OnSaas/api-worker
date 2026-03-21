@@ -84,6 +84,39 @@ export type UsageResponse = {
 	offset: number;
 };
 
+export type RuntimeEvent = {
+	id: string;
+	level: "info" | "warning" | "error";
+	code: string;
+	message: string;
+	request_id?: string | null;
+	session_id?: string | null;
+	request_path?: string | null;
+	method?: string | null;
+	channel_id?: string | null;
+	token_id?: string | null;
+	model?: string | null;
+	context_json?: string | null;
+	created_at: string;
+};
+
+export type RuntimeEventQuery = {
+	levels: string[];
+	codes: string[];
+	request_id: string;
+	session_id: string;
+	path: string;
+	from: string;
+	to: string;
+};
+
+export type RuntimeEventResponse = {
+	events: RuntimeEvent[];
+	total: number;
+	limit: number;
+	offset: number;
+};
+
 export type DashboardData = {
 	summary: {
 		total_requests: number;
@@ -118,6 +151,8 @@ export type DashboardQuery = {
 
 export type Settings = {
 	log_retention_days: number;
+	runtime_event_retention_days?: number;
+	runtime_event_levels?: string[];
 	session_ttl_hours: number;
 	admin_password_set?: boolean;
 	checkin_schedule_time?: string;
@@ -186,6 +221,7 @@ export type AdminData = {
 	tokens: Token[];
 	models: ModelItem[];
 	usage: UsageLog[];
+	runtime_events: RuntimeEvent[];
 	dashboard: DashboardData | null;
 	settings: Settings | null;
 };
@@ -196,6 +232,7 @@ export type TabId =
 	| "models"
 	| "tokens"
 	| "usage"
+	| "runtime_events"
 	| "settings";
 
 export type TabItem = {
@@ -224,6 +261,8 @@ export type SiteCallTokenForm = {
 
 export type SettingsForm = {
 	log_retention_days: string;
+	runtime_event_retention_days: string;
+	runtime_event_levels: string[];
 	session_ttl_hours: string;
 	admin_password: string;
 	checkin_schedule_time: string;

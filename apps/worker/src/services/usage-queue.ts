@@ -8,6 +8,7 @@ import {
 	recordChannelModelError,
 	upsertChannelModelCapabilities,
 } from "./channel-model-capabilities";
+import { recordRuntimeEvent } from "./runtime-events";
 import type { UsageInput } from "./usage";
 import { recordUsage } from "./usage";
 
@@ -97,10 +98,15 @@ export async function handleUsageQueue(
 			);
 			message.ack();
 		} catch (error) {
-			console.error("[usage-queue:error]", {
-				queue: batch.queue,
-				error: error instanceof Error ? error.message : String(error),
-			});
+			await recordRuntimeEvent(env.DB, {
+				level: "error",
+				code: "usage_queue_consume_failed",
+				message: "usage_queue_consume_failed",
+				context: {
+					queue: batch.queue,
+					error: error instanceof Error ? error.message : String(error),
+				},
+			}).catch(() => undefined);
 			message.retry();
 		}
 	});

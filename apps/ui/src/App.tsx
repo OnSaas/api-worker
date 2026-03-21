@@ -39,6 +39,8 @@ import type {
 	DashboardQuery,
 	NoticeMessage,
 	NoticeTone,
+	RuntimeEventQuery,
+	RuntimeEventResponse,
 	Settings,
 	SettingsForm,
 	Site,
@@ -62,6 +64,7 @@ import { AppLayout } from "./features/AppLayout";
 import { DashboardView } from "./features/DashboardView";
 import { LoginView } from "./features/LoginView";
 import { ModelsView } from "./features/ModelsView";
+import { RuntimeEventsView } from "./features/RuntimeEventsView";
 import { SettingsView } from "./features/SettingsView";
 import { SitesView } from "./features/SitesView";
 import { TokensView } from "./features/TokensView";
@@ -86,6 +89,7 @@ const tabToPath: Record<TabId, string> = {
 	models: "/models",
 	tokens: "/tokens",
 	usage: "/usage",
+	runtime_events: "/runtime-events",
 	settings: "/settings",
 };
 
@@ -95,6 +99,7 @@ const pathToTab: Record<string, TabId> = {
 	"/models": "models",
 	"/tokens": "tokens",
 	"/usage": "usage",
+	"/runtime-events": "runtime_events",
 	"/settings": "settings",
 };
 
@@ -120,6 +125,16 @@ const initialUsageQuery: UsageQuery = {
 	token_ids: [],
 	models: [],
 	statuses: [],
+	from: "",
+	to: "",
+};
+
+const initialRuntimeEventQuery: RuntimeEventQuery = {
+	levels: [],
+	codes: [],
+	request_id: "",
+	session_id: "",
+	path: "",
 	from: "",
 	to: "",
 };
@@ -294,6 +309,16 @@ const App = () => {
 	const [usageFilters, setUsageFilters] =
 		useState<UsageQuery>(initialUsageQuery);
 	const [usageQuery, setUsageQuery] = useState<UsageQuery>(initialUsageQuery);
+	const [runtimeEventsPage, setRuntimeEventsPage] = useState(1);
+	const [runtimeEventsPageSize, setRuntimeEventsPageSize] = useState(() =>
+		loadPageSizePref("pageSize:runtimeEvents", 50),
+	);
+	const [runtimeEventsTotal, setRuntimeEventsTotal] = useState(0);
+	const [runtimeEventFilters, setRuntimeEventFilters] =
+		useState<RuntimeEventQuery>(initialRuntimeEventQuery);
+	const [runtimeEventQuery, setRuntimeEventQuery] = useState<RuntimeEventQuery>(
+		initialRuntimeEventQuery,
+	);
 	const [editingSite, setEditingSite] = useState<Site | null>(null);
 	const [siteForm, setSiteForm] = useState<SiteForm>(() => ({
 		...initialSiteForm,
@@ -581,6 +606,56 @@ const App = () => {
 		[apiFetch, usagePage, usagePageSize, usageQuery],
 	);
 
+	const loadRuntimeEvents = useCallback(
+		async (options?: {
+			page?: number;
+			pageSize?: number;
+			query?: RuntimeEventQuery;
+		}) => {
+			const page = options?.page ?? runtimeEventsPage;
+			const pageSize = options?.pageSize ?? runtimeEventsPageSize;
+			const query = options?.query ?? runtimeEventQuery;
+			const params = new URLSearchParams();
+			const offset = Math.max(0, (page - 1) * pageSize);
+			params.set("limit", String(pageSize));
+			params.set("offset", String(offset));
+			const levels = query.levels.filter(Boolean);
+			const codes = query.codes.filter(Boolean);
+			const from = query.from.trim();
+			const to = query.to.trim();
+			const requestId = query.request_id.trim();
+			const sessionId = query.session_id.trim();
+			const path = query.path.trim();
+			if (from) {
+				params.set("from", `${from} 00:00:00`);
+			}
+			if (to) {
+				params.set("to", `${to} 23:59:59`);
+			}
+			if (levels.length > 0) {
+				params.set("levels", levels.join(","));
+			}
+			if (codes.length > 0) {
+				params.set("codes", codes.join(","));
+			}
+			if (requestId) {
+				params.set("request_id", requestId);
+			}
+			if (sessionId) {
+				params.set("session_id", sessionId);
+			}
+			if (path) {
+				params.set("path", path);
+			}
+			const result = await apiFetch<RuntimeEventResponse>(
+				`/api/runtime-events?${params.toString()}`,
+			);
+			setData((prev) => ({ ...prev, runtime_events: result.events }));
+			setRuntimeEventsTotal(result.total ?? result.events.length);
+		},
+		[apiFetch, runtimeEventQuery, runtimeEventsPage, runtimeEventsPageSize],
+	);
+
 	const loadSettings = useCallback(async () => {
 		const settings = await apiFetch<Settings>("/api/settings");
 		setData((prev) => ({ ...prev, settings }));
@@ -614,6 +689,9 @@ const App = () => {
 				if (tabId === "settings") {
 					await loadSettings();
 				}
+				if (tabId === "runtime_events") {
+					await loadRuntimeEvents();
+				}
 			} catch (error) {
 				pushNotice("error", (error as Error).message);
 			} finally {
@@ -627,6 +705,7 @@ const App = () => {
 			loadSettings,
 			loadSites,
 			loadTokens,
+			loadRuntimeEvents,
 			loadUsage,
 			pushNotice,
 		],
@@ -658,6 +737,12 @@ const App = () => {
 			data.settings.runtime_settings ?? data.settings.runtime_config;
 		setSettingsForm({
 			log_retention_days: String(data.settings.log_retention_days ?? 30),
+			runtime_event_retention_days: String(
+				data.settings.runtime_event_retention_days ?? 30,
+			),
+			runtime_event_levels: Array.isArray(data.settings.runtime_event_levels)
+				? data.settings.runtime_event_levels
+				: ["info", "warning", "error"],
 			session_ttl_hours: String(data.settings.session_ttl_hours ?? 12),
 			admin_password: "",
 			checkin_schedule_time: data.settings.checkin_schedule_time ?? "00:10",
@@ -899,6 +984,121 @@ const App = () => {
 			endAction(actionKey);
 		}
 	}, [endAction, isActionPending, loadUsage, pushNotice, startAction]);
+
+	const handleRuntimeEventsPageChange = useCallback(
+		async (next: number) => {
+			if (next === runtimeEventsPage) {
+				return;
+			}
+			const actionKey = buildActionKey("runtime-events:load");
+			if (isActionPending(actionKey)) {
+				return;
+			}
+			startAction(actionKey);
+			setRuntimeEventsPage(next);
+			try {
+				await loadRuntimeEvents({ page: next });
+			} catch (error) {
+				pushNotice("error", (error as Error).message);
+			} finally {
+				endAction(actionKey);
+			}
+		},
+		[
+			endAction,
+			isActionPending,
+			loadRuntimeEvents,
+			pushNotice,
+			runtimeEventsPage,
+			startAction,
+		],
+	);
+
+	const handleRuntimeEventsPageSizeChange = useCallback(
+		async (next: number) => {
+			const actionKey = buildActionKey("runtime-events:load");
+			if (isActionPending(actionKey)) {
+				return;
+			}
+			startAction(actionKey);
+			persistPageSizePref("pageSize:runtimeEvents", next);
+			setRuntimeEventsPageSize(next);
+			setRuntimeEventsPage(1);
+			try {
+				await loadRuntimeEvents({ page: 1, pageSize: next });
+			} catch (error) {
+				pushNotice("error", (error as Error).message);
+			} finally {
+				endAction(actionKey);
+			}
+		},
+		[endAction, isActionPending, loadRuntimeEvents, pushNotice, startAction],
+	);
+
+	const handleRuntimeEventFiltersChange = useCallback(
+		(patch: Partial<RuntimeEventQuery>) => {
+			setRuntimeEventFilters((prev) => ({ ...prev, ...patch }));
+		},
+		[],
+	);
+
+	const handleRuntimeEventSearch = useCallback(async () => {
+		const actionKey = buildActionKey("runtime-events:load");
+		if (isActionPending(actionKey)) {
+			return;
+		}
+		const nextQuery = {
+			levels: runtimeEventFilters.levels.filter(Boolean),
+			codes: runtimeEventFilters.codes.filter(Boolean),
+			request_id: runtimeEventFilters.request_id.trim(),
+			session_id: runtimeEventFilters.session_id.trim(),
+			path: runtimeEventFilters.path.trim(),
+			from: runtimeEventFilters.from.trim(),
+			to: runtimeEventFilters.to.trim(),
+		};
+		startAction(actionKey);
+		setRuntimeEventQuery(nextQuery);
+		setRuntimeEventFilters(nextQuery);
+		setRuntimeEventsPage(1);
+		try {
+			await loadRuntimeEvents({ page: 1, query: nextQuery });
+		} catch (error) {
+			pushNotice("error", (error as Error).message);
+		} finally {
+			endAction(actionKey);
+		}
+	}, [
+		endAction,
+		isActionPending,
+		loadRuntimeEvents,
+		pushNotice,
+		runtimeEventFilters.codes,
+		runtimeEventFilters.from,
+		runtimeEventFilters.levels,
+		runtimeEventFilters.path,
+		runtimeEventFilters.request_id,
+		runtimeEventFilters.session_id,
+		runtimeEventFilters.to,
+		startAction,
+	]);
+
+	const handleRuntimeEventClear = useCallback(async () => {
+		const actionKey = buildActionKey("runtime-events:load");
+		if (isActionPending(actionKey)) {
+			return;
+		}
+		startAction(actionKey);
+		setRuntimeEventFilters(initialRuntimeEventQuery);
+		setRuntimeEventQuery(initialRuntimeEventQuery);
+		setRuntimeEventsPage(1);
+		try {
+			await loadRuntimeEvents({ page: 1, query: initialRuntimeEventQuery });
+		} catch (error) {
+			pushNotice("error", (error as Error).message);
+		} finally {
+			endAction(actionKey);
+		}
+	}, [endAction, isActionPending, loadRuntimeEvents, pushNotice, startAction]);
 
 	const handleTabChange = useCallback(
 		(tabId: TabId) => {
@@ -1297,6 +1497,9 @@ const App = () => {
 				return;
 			}
 			const retention = Number(settingsForm.log_retention_days);
+			const runtimeEventRetention = Number(
+				settingsForm.runtime_event_retention_days,
+			);
 			const sessionTtlHours = Number(settingsForm.session_ttl_hours);
 			const failureCooldownMinutes = Number(
 				settingsForm.model_failure_cooldown_minutes,
@@ -1312,6 +1515,9 @@ const App = () => {
 			const streamUsageMaxParsers = Number(
 				settingsForm.proxy_stream_usage_max_parsers,
 			);
+			const runtimeEventLevels = settingsForm.runtime_event_levels
+				.map((item) => item.trim().toLowerCase())
+				.filter(Boolean);
 			const usageQueueDailyLimit = Number(settingsForm.usage_queue_daily_limit);
 			const usageQueueDirectRatio = Number(
 				settingsForm.usage_queue_direct_write_ratio,
@@ -1330,10 +1536,12 @@ const App = () => {
 			if (
 				Number.isNaN(retention) ||
 				retention < 1 ||
+				Number.isNaN(runtimeEventRetention) ||
+				runtimeEventRetention < 1 ||
 				Number.isNaN(sessionTtlHours) ||
 				sessionTtlHours < 1
 			) {
-				pushNotice("warning", "请填写有效的保留天数与会话时长");
+				pushNotice("warning", "请填写有效的日志保留天数与会话时长");
 				return;
 			}
 			if (Number.isNaN(failureCooldownMinutes) || failureCooldownMinutes < 1) {
@@ -1395,9 +1603,19 @@ const App = () => {
 				pushNotice("warning", "缓存 TTL 需为非负整数");
 				return;
 			}
+			if (
+				runtimeEventLevels.some(
+					(level) => !["info", "warning", "error"].includes(level),
+				)
+			) {
+				pushNotice("warning", "系统日志等级仅支持 info/warning/error");
+				return;
+			}
 			startAction(actionKey);
-			const payload: Record<string, number | string | boolean> = {
+			const payload: Record<string, number | string | boolean | string[]> = {
 				log_retention_days: retention,
+				runtime_event_retention_days: runtimeEventRetention,
+				runtime_event_levels: runtimeEventLevels,
 				session_ttl_hours: sessionTtlHours,
 				checkin_schedule_time:
 					settingsForm.checkin_schedule_time.trim() || "00:10",
@@ -1725,6 +1943,22 @@ const App = () => {
 		}
 	}, [endAction, isActionPending, loadUsage, pushNotice, startAction]);
 
+	const handleRuntimeEventsRefresh = useCallback(async () => {
+		const actionKey = buildActionKey("runtime-events:refresh");
+		if (isActionPending(actionKey)) {
+			return;
+		}
+		startAction(actionKey);
+		try {
+			await loadRuntimeEvents();
+			pushNotice("success", "系统日志已刷新");
+		} catch (error) {
+			pushNotice("error", (error as Error).message);
+		} finally {
+			endAction(actionKey);
+		}
+	}, [endAction, isActionPending, loadRuntimeEvents, pushNotice, startAction]);
+
 	const filteredSites = useMemo(
 		() => filterSites(data.sites, siteSearch),
 		[data.sites, siteSearch],
@@ -1755,6 +1989,10 @@ const App = () => {
 		() => Math.max(1, Math.ceil(usageTotal / usagePageSize)),
 		[usagePageSize, usageTotal],
 	);
+	const runtimeEventsTotalPages = useMemo(
+		() => Math.max(1, Math.ceil(runtimeEventsTotal / runtimeEventsPageSize)),
+		[runtimeEventsPageSize, runtimeEventsTotal],
+	);
 
 	useEffect(() => {
 		setSitePage((prev) => Math.min(prev, siteTotalPages));
@@ -1771,6 +2009,10 @@ const App = () => {
 	useEffect(() => {
 		setUsagePage((prev) => Math.min(prev, usageTotalPages));
 	}, [usageTotalPages]);
+
+	useEffect(() => {
+		setRuntimeEventsPage((prev) => Math.min(prev, runtimeEventsTotalPages));
+	}, [runtimeEventsTotalPages]);
 
 	const activeLabel = useMemo(
 		() => tabs.find((tab) => tab.id === activeTab)?.label ?? "管理台",
@@ -1895,6 +2137,27 @@ const App = () => {
 					onFiltersChange={handleUsageFiltersChange}
 					onSearch={handleUsageSearch}
 					onClear={handleUsageClear}
+				/>
+			);
+		}
+		if (activeTab === "runtime_events") {
+			return (
+				<RuntimeEventsView
+					events={data.runtime_events}
+					total={runtimeEventsTotal}
+					page={runtimeEventsPage}
+					pageSize={runtimeEventsPageSize}
+					filters={runtimeEventFilters}
+					isRefreshing={
+						isActionPending(buildActionKey("runtime-events:refresh")) ||
+						isActionPending(buildActionKey("runtime-events:load"))
+					}
+					onRefresh={handleRuntimeEventsRefresh}
+					onPageChange={handleRuntimeEventsPageChange}
+					onPageSizeChange={handleRuntimeEventsPageSizeChange}
+					onFiltersChange={handleRuntimeEventFiltersChange}
+					onSearch={handleRuntimeEventSearch}
+					onClear={handleRuntimeEventClear}
 				/>
 			);
 		}

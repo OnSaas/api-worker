@@ -25,7 +25,48 @@ export type StreamUsageOptions = {
 	timeoutMs?: number;
 };
 
+export type StreamUsageParseErrorCode =
+	| "usage_stream_reader_failed"
+	| "usage_sse_line_parse_failed"
+	| "usage_sse_tail_parse_failed";
+
+export class StreamUsageParseError extends Error {
+	code: StreamUsageParseErrorCode;
+	detail: string | null;
+
+	constructor(code: StreamUsageParseErrorCode, detail?: string | null) {
+		super(code);
+		this.name = "StreamUsageParseError";
+		this.code = code;
+		this.detail = detail ?? null;
+	}
+}
+
 const USAGE_HINTS = ['"usage"', '"usageMetadata"', '"usage_metadata"'];
+
+function normalizeErrorDetail(error: unknown): string | null {
+	if (error instanceof Error) {
+		const text = error.message.trim();
+		return text.length > 0 ? text : error.name;
+	}
+	if (typeof error === "string") {
+		const text = error.trim();
+		return text.length > 0 ? text : null;
+	}
+	return null;
+}
+
+function isAbortLikeError(error: unknown): boolean {
+	if (!(error instanceof Error)) {
+		return false;
+	}
+	const message = error.message.toLowerCase();
+	return (
+		error.name === "AbortError" ||
+		message.includes("abort") ||
+		message.includes("cancel")
+	);
+}
 
 function toNumber(value: unknown): number | null {
 	if (value === null || value === undefined) {
@@ -136,7 +177,19 @@ export async function parseUsageFromSse(
 	};
 
 	while (true) {
-		const { done, value } = await reader.read();
+		let chunk: ReadableStreamReadResult<Uint8Array>;
+		try {
+			chunk = await reader.read();
+		} catch (error) {
+			if (timedOut || isAbortLikeError(error)) {
+				break;
+			}
+			throw new StreamUsageParseError(
+				"usage_stream_reader_failed",
+				normalizeErrorDetail(error),
+			);
+		}
+		const { done, value } = chunk;
 		if (done) {
 			break;
 		}
@@ -160,7 +213,15 @@ export async function parseUsageFromSse(
 						newlineIndex = buffer.indexOf("\n");
 						continue;
 					}
-					const wasmCandidate = parseUsageFromSseLineViaWasm(line);
+					let wasmCandidate: NormalizedUsage | null = null;
+					try {
+						wasmCandidate = parseUsageFromSseLineViaWasm(line);
+					} catch (error) {
+						throw new StreamUsageParseError(
+							"usage_sse_line_parse_failed",
+							normalizeErrorDetail(error),
+						);
+					}
 					if (wasmCandidate) {
 						usage = wasmCandidate;
 						if (mode === "lite") {
@@ -187,9 +248,17 @@ export async function parseUsageFromSse(
 				firstTokenLatencyMs = Date.now() - start;
 			}
 			if (mode === "lite" && !payloadMayContainUsage(payload)) {
-				return { usage, firstTokenLatencyMs };
+				return { usage, firstTokenLatencyMs, timedOut };
 			}
-			const wasmCandidate = parseUsageFromSseLineViaWasm(remaining);
+			let wasmCandidate: NormalizedUsage | null = null;
+			try {
+				wasmCandidate = parseUsageFromSseLineViaWasm(remaining);
+			} catch (error) {
+				throw new StreamUsageParseError(
+					"usage_sse_tail_parse_failed",
+					normalizeErrorDetail(error),
+				);
+			}
 			if (wasmCandidate) {
 				usage = wasmCandidate;
 				if (timeoutId) {

@@ -77,17 +77,10 @@ const summarizePayload = (payload: unknown): PayloadSummary => {
 };
 
 const logCheckin = (
-	site: CheckinTarget,
-	stage: string,
-	data: Record<string, unknown>,
-) => {
-	console.log("[checkin]", {
-		id: site.id,
-		name: site.name,
-		stage,
-		...data,
-	});
-};
+	_site: CheckinTarget,
+	_stage: string,
+	_data: Record<string, unknown>,
+) => {};
 
 const parseSigned = (payload: unknown): boolean => {
 	if (!payload || typeof payload !== "object") {

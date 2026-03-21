@@ -15,6 +15,7 @@ export const tabs: TabItem[] = [
 	{ id: "models", label: "模型广场" },
 	{ id: "tokens", label: "令牌管理" },
 	{ id: "usage", label: "使用日志" },
+	{ id: "runtime_events", label: "系统日志" },
 	{ id: "settings", label: "系统设置" },
 ];
 
@@ -23,6 +24,7 @@ export const initialData: AdminData = {
 	tokens: [],
 	models: [],
 	usage: [],
+	runtime_events: [],
 	dashboard: null,
 	settings: null,
 };
@@ -47,6 +49,8 @@ export const initialSiteForm: SiteForm = {
 
 export const initialSettingsForm: SettingsForm = {
 	log_retention_days: "30",
+	runtime_event_retention_days: "30",
+	runtime_event_levels: ["info", "warning", "error"],
 	session_ttl_hours: "12",
 	admin_password: "",
 	checkin_schedule_time: "00:10",

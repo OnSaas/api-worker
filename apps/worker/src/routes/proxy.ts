@@ -37,6 +37,7 @@ import {
 	parseDownstreamModel,
 	parseDownstreamStream,
 } from "../services/provider-transform";
+import { recordRuntimeEvent } from "../services/runtime-events";
 import {
 	getCacheConfig,
 	getModelFailureCooldownMinutes,
@@ -62,6 +63,7 @@ import {
 	parseUsageFromSse,
 	type StreamUsageMode,
 	type StreamUsageOptions,
+	StreamUsageParseError,
 } from "../utils/usage";
 
 const proxy = new Hono<AppEnv>();
@@ -92,6 +94,13 @@ const USAGE_RESERVE_TIMEOUT_MS = 600;
 const USAGE_QUEUE_SEND_TIMEOUT_MS = 1500;
 const USAGE_RESERVE_BREAKER_MS = 60_000;
 const STREAM_USAGE_PARSE_TIMEOUT_MS = 20_000;
+const MAX_USAGE_ERROR_MESSAGE_LENGTH = 320;
+const STREAM_USAGE_UNKNOWN_PARSE_ERROR_CODE =
+	"usage_stream_parse_unknown_error";
+const STREAM_USAGE_NON_ERROR_THROWN_CODE =
+	"usage_stream_parse_non_error_thrown";
+const PROXY_UPSTREAM_TIMEOUT_ERROR_CODE = "proxy_upstream_timeout";
+const PROXY_UPSTREAM_FETCH_ERROR_CODE = "proxy_upstream_fetch_exception";
 
 let activeStreamUsageParsers = 0;
 
@@ -104,6 +113,56 @@ function normalizeMessage(value: string | null): string | null {
 		return null;
 	}
 	return trimmed;
+}
+
+function formatUsageErrorMessage(code: string, detail: string | null): string {
+	const normalized = normalizeMessage(detail);
+	if (!normalized) {
+		return code;
+	}
+	const combined = `${code}: ${normalized}`;
+	if (combined.length <= MAX_USAGE_ERROR_MESSAGE_LENGTH) {
+		return combined;
+	}
+	return `${combined.slice(0, MAX_USAGE_ERROR_MESSAGE_LENGTH - 1)}…`;
+}
+
+function classifyStreamUsageParseError(error: unknown): {
+	errorCode: string;
+	errorMessage: string;
+} {
+	if (error instanceof StreamUsageParseError) {
+		return {
+			errorCode: error.code,
+			errorMessage: formatUsageErrorMessage(error.code, error.detail),
+		};
+	}
+	if (error instanceof Error) {
+		const errorCode = STREAM_USAGE_UNKNOWN_PARSE_ERROR_CODE;
+		return {
+			errorCode,
+			errorMessage: formatUsageErrorMessage(
+				errorCode,
+				normalizeMessage(error.message) ?? error.name,
+			),
+		};
+	}
+	const errorCode = STREAM_USAGE_NON_ERROR_THROWN_CODE;
+	return {
+		errorCode,
+		errorMessage: errorCode,
+	};
+}
+
+function normalizeUpstreamErrorCode(
+	errorCode: string | null,
+	status: number,
+): string {
+	const normalized = normalizeMessage(errorCode);
+	if (normalized) {
+		return normalized;
+	}
+	return `upstream_http_${status}`;
 }
 
 function getStreamUsageOptions(settings: {
@@ -158,6 +217,14 @@ function createUsageEventScheduler(
 		usage_queue_daily_limit: number;
 		usage_queue_direct_write_ratio: number;
 	},
+	diagnostics: {
+		requestId?: string | null;
+		sessionId?: string | null;
+		requestPath?: string | null;
+		method?: string | null;
+		tokenId?: string | null;
+		model?: string | null;
+	},
 ): (event: UsageQueueEvent) => void {
 	const queue = c.env.USAGE_QUEUE;
 	const queueBound = Boolean(queue);
@@ -169,6 +236,29 @@ function createUsageEventScheduler(
 	const dailyLimit = settings.usage_queue_daily_limit;
 	let overLimit = false;
 	let reserveBreakerUntil = 0;
+	const emitRuntimeEvent = (
+		level: "info" | "warning" | "error",
+		code: string,
+		message: string,
+		context: Record<string, unknown>,
+	) => {
+		const task = recordRuntimeEvent(c.env.DB, {
+			level,
+			code,
+			message,
+			requestId: diagnostics.requestId ?? null,
+			sessionId: diagnostics.sessionId ?? null,
+			requestPath:
+				(typeof context.requestPath === "string" && context.requestPath) ||
+				diagnostics.requestPath ||
+				null,
+			method: diagnostics.method ?? null,
+			tokenId: diagnostics.tokenId ?? null,
+			model: diagnostics.model ?? null,
+			context,
+		}).catch(() => undefined);
+		scheduleDbWrite(c, task);
+	};
 
 	const shouldUseQueue = async (): Promise<boolean> => {
 		if (!queueEnabled) {
@@ -197,17 +287,25 @@ function createUsageEventScheduler(
 			);
 			if (!result.allowed) {
 				overLimit = true;
-				console.warn("[usage-limiter:reserve_over_limit]", {
-					limit: dailyLimit,
-				});
+				emitRuntimeEvent(
+					"warning",
+					"usage_limiter_reserve_over_limit",
+					"usage_limiter_reserve_over_limit",
+					{ limit: dailyLimit },
+				);
 			}
 			return result.allowed;
 		} catch (error) {
 			reserveBreakerUntil = Date.now() + USAGE_RESERVE_BREAKER_MS;
-			console.warn("[usage-limiter:reserve_failed]", {
-				error: error instanceof Error ? error.message : String(error),
-				breaker_ms: USAGE_RESERVE_BREAKER_MS,
-			});
+			emitRuntimeEvent(
+				"warning",
+				"usage_limiter_reserve_failed",
+				"usage_limiter_reserve_failed",
+				{
+					error: error instanceof Error ? error.message : String(error),
+					breaker_ms: USAGE_RESERVE_BREAKER_MS,
+				},
+			);
 			return false;
 		}
 	};
@@ -233,18 +331,28 @@ function createUsageEventScheduler(
 					);
 					return;
 				} catch (error) {
-					console.warn("[usage-queue:send_failed]", {
-						error: error instanceof Error ? error.message : String(error),
-						fallback: "direct_write",
-					});
+					emitRuntimeEvent(
+						"warning",
+						"usage_queue_send_failed",
+						"usage_queue_send_failed",
+						{
+							error: error instanceof Error ? error.message : String(error),
+							fallback: "direct_write",
+						},
+					);
 				}
 			}
 			await processUsageQueueEvent(c.env.DB, event, c.env.CACHE_VERSION_STORE);
 		})().catch((error) => {
-			console.error("[usage:event_schedule_failed]", {
-				event_type: event.type,
-				error: error instanceof Error ? error.message : String(error),
-			});
+			emitRuntimeEvent(
+				"error",
+				"usage_event_schedule_failed",
+				"usage_event_schedule_failed",
+				{
+					event_type: event.type,
+					error: error instanceof Error ? error.message : String(error),
+				},
+			);
 		});
 		scheduleDbWrite(c, task);
 	};
@@ -291,7 +399,12 @@ export function shouldCooldown(
 	upstreamStatus: number | null,
 	errorCode: string | null,
 ): boolean {
-	if (errorCode === "timeout" || errorCode === "exception") {
+	if (
+		errorCode === "timeout" ||
+		errorCode === "exception" ||
+		errorCode === PROXY_UPSTREAM_TIMEOUT_ERROR_CODE ||
+		errorCode === PROXY_UPSTREAM_FETCH_ERROR_CODE
+	) {
 		return true;
 	}
 	if (upstreamStatus === 429 || upstreamStatus === 408) {
@@ -518,11 +631,13 @@ async function fetchWithTimeout(
 proxy.all("/*", tokenAuth, async (c) => {
 	const tokenRecord = c.get("tokenRecord") as TokenRecord;
 	const requestStart = Date.now();
+	const requestId =
+		c.req.header("cf-ray") ?? c.req.header("x-client-request-id") ?? null;
+	const sessionId = c.req.header("session_id") ?? null;
 	const [cacheConfig, runtimeSettings] = await Promise.all([
 		getCacheConfig(c.env.DB, c.env.CACHE_VERSION_STORE),
 		getProxyRuntimeSettings(c.env.DB),
 	]);
-	const scheduleUsageEvent = createUsageEventScheduler(c, runtimeSettings);
 	let requestText = await c.req.text();
 	const parsedBody = requestText
 		? safeJsonParse<Record<string, unknown> | null>(requestText, null)
@@ -540,6 +655,36 @@ proxy.all("/*", tokenAuth, async (c) => {
 		parsedBody,
 	);
 	const reasoningEffort = extractReasoningEffort(parsedBody);
+	const scheduleRuntimeEvent = (
+		level: "info" | "warning" | "error",
+		code: string,
+		message: string,
+		context: Record<string, unknown>,
+	) => {
+		scheduleDbWrite(
+			c,
+			recordRuntimeEvent(c.env.DB, {
+				level,
+				code,
+				message,
+				requestId,
+				sessionId,
+				requestPath: c.req.path,
+				method: c.req.method,
+				tokenId: tokenRecord.id,
+				model: downstreamModel,
+				context,
+			}).catch(() => undefined),
+		);
+	};
+	const scheduleUsageEvent = createUsageEventScheduler(c, runtimeSettings, {
+		requestId,
+		sessionId,
+		requestPath: c.req.path,
+		method: c.req.method,
+		tokenId: tokenRecord.id,
+		model: downstreamModel,
+	});
 	if (
 		downstreamProvider === "openai" &&
 		isStream &&
@@ -722,12 +867,17 @@ proxy.all("/*", tokenAuth, async (c) => {
 				(channel) => !coolingChannels.has(channel.id),
 			);
 			if (candidates.length === 0) {
-				console.warn("[proxy:model_cooldown]", {
-					path: c.req.path,
-					model: downstreamModel,
-					cooldown_minutes: cooldownMinutes,
-					blocked_channels: coolingChannels.size,
-				});
+				scheduleRuntimeEvent(
+					"warning",
+					"proxy_model_cooldown",
+					"proxy_model_cooldown",
+					{
+						path: c.req.path,
+						model: downstreamModel,
+						cooldown_minutes: cooldownMinutes,
+						blocked_channels: coolingChannels.size,
+					},
+				);
 				recordEarlyUsage({
 					status: 503,
 					code: "upstream_cooldown",
@@ -739,12 +889,17 @@ proxy.all("/*", tokenAuth, async (c) => {
 	}
 
 	if (candidates.length === 0 && allowedChannels.length > 0) {
-		console.warn("[proxy:no_compatible_channels]", {
-			path: c.req.path,
-			model: downstreamModel,
-			downstream_provider: downstreamProvider,
-			allowed_channels: allowedChannels.length,
-		});
+		scheduleRuntimeEvent(
+			"warning",
+			"proxy_no_compatible_channels",
+			"proxy_no_compatible_channels",
+			{
+				path: c.req.path,
+				model: downstreamModel,
+				downstream_provider: downstreamProvider,
+				allowed_channels: allowedChannels.length,
+			},
+		);
 	}
 	if (candidates.length === 0) {
 		recordEarlyUsage({
@@ -1051,10 +1206,12 @@ proxy.all("/*", tokenAuth, async (c) => {
 				}
 				const immediateUsage = jsonUsage ?? headerUsage;
 				if (!isStream && !immediateUsage) {
+					const usageMissingMessage =
+						"usage_missing: non-stream response does not include usage in json or headers";
 					lastErrorDetails = {
 						upstreamStatus: response.status,
 						errorCode: "usage_missing",
-						errorMessage: "usage_missing",
+						errorMessage: usageMissingMessage,
 					};
 					recordAttemptUsage({
 						channelId: channel.id,
@@ -1065,7 +1222,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 						status: "error",
 						upstreamStatus: response.status,
 						errorCode: "usage_missing",
-						errorMessage: "usage_missing",
+						errorMessage: usageMissingMessage,
 					});
 					continue;
 				}
@@ -1108,10 +1265,16 @@ proxy.all("/*", tokenAuth, async (c) => {
 				break;
 			}
 			const errorInfo = await extractErrorDetails(response);
+			const normalizedErrorCode = normalizeUpstreamErrorCode(
+				errorInfo.errorCode,
+				response.status,
+			);
+			const normalizedErrorMessage =
+				normalizeMessage(errorInfo.errorMessage) ?? normalizedErrorCode;
 			lastErrorDetails = {
 				upstreamStatus: response.status,
-				errorCode: errorInfo.errorCode,
-				errorMessage: errorInfo.errorMessage,
+				errorCode: normalizedErrorCode,
+				errorMessage: normalizedErrorMessage,
 			};
 			recordAttemptUsage({
 				channelId: channel.id,
@@ -1121,12 +1284,12 @@ proxy.all("/*", tokenAuth, async (c) => {
 				usage: null,
 				status: "error",
 				upstreamStatus: response.status,
-				errorCode: errorInfo.errorCode,
-				errorMessage: errorInfo.errorMessage,
+				errorCode: normalizedErrorCode,
+				errorMessage: normalizedErrorMessage,
 			});
 			const cooldownEligible = shouldCooldown(
 				response.status,
-				errorInfo.errorCode,
+				normalizedErrorCode,
 			);
 			if (recordModel && cooldownSeconds > 0 && cooldownEligible) {
 				scheduleUsageEvent({
@@ -1160,23 +1323,36 @@ proxy.all("/*", tokenAuth, async (c) => {
 				error instanceof Error &&
 				(error.name === "AbortError" ||
 					error.message.includes("upstream_timeout"));
-			console.error("[proxy:upstream_exception]", {
-				channel_id: channel.id,
-				upstream_provider: upstreamProvider,
-				path: upstreamRequestPath,
-				model: downstreamModel,
-				upstream_model: upstreamModel,
-				timeout_ms: upstreamTimeoutMs,
-				reason: isTimeout ? "timeout" : "exception",
-				error: error instanceof Error ? error.message : String(error),
-			});
+			const usageErrorCode = isTimeout
+				? PROXY_UPSTREAM_TIMEOUT_ERROR_CODE
+				: PROXY_UPSTREAM_FETCH_ERROR_CODE;
+			const usageErrorDetail = normalizeMessage(
+				error instanceof Error ? error.message : String(error),
+			);
+			const usageErrorMessage = formatUsageErrorMessage(
+				usageErrorCode,
+				usageErrorDetail,
+			);
+			scheduleRuntimeEvent(
+				"error",
+				"proxy_upstream_exception",
+				"proxy_upstream_exception",
+				{
+					channel_id: channel.id,
+					upstream_provider: upstreamProvider,
+					path: upstreamRequestPath,
+					model: downstreamModel,
+					upstream_model: upstreamModel,
+					timeout_ms: upstreamTimeoutMs,
+					reason: isTimeout ? "timeout" : "exception",
+					error: error instanceof Error ? error.message : String(error),
+				},
+			);
 			const attemptLatencyMs = Date.now() - attemptStart;
 			lastErrorDetails = {
 				upstreamStatus: null,
-				errorCode: isTimeout ? "timeout" : "exception",
-				errorMessage: normalizeMessage(
-					error instanceof Error ? error.message : String(error),
-				),
+				errorCode: usageErrorCode,
+				errorMessage: usageErrorMessage,
 			};
 			recordAttemptUsage({
 				channelId: channel.id,
@@ -1189,17 +1365,14 @@ proxy.all("/*", tokenAuth, async (c) => {
 				errorCode: lastErrorDetails.errorCode,
 				errorMessage: lastErrorDetails.errorMessage,
 			});
-			const cooldownEligible = shouldCooldown(
-				null,
-				isTimeout ? "timeout" : "exception",
-			);
+			const cooldownEligible = shouldCooldown(null, usageErrorCode);
 			if (recordModel && cooldownSeconds > 0 && cooldownEligible) {
 				scheduleUsageEvent({
 					type: "model_error",
 					payload: {
 						channelId: channel.id,
 						model: recordModel,
-						errorCode: isTimeout ? "timeout" : "exception",
+						errorCode: usageErrorCode,
 						nowSeconds,
 					},
 				});
@@ -1215,7 +1388,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 					payload: {
 						channelId: channel.id,
 						model: downstreamModel,
-						errorCode: isTimeout ? "timeout" : "exception",
+						errorCode: usageErrorCode,
 						nowSeconds,
 					},
 				});
@@ -1225,13 +1398,18 @@ proxy.all("/*", tokenAuth, async (c) => {
 	}
 
 	if (!selectedResponse && lastResponse && !lastResponse.ok) {
-		console.warn("[proxy:upstream_exhausted]", {
-			path: targetPath,
-			model: downstreamModel,
-			status: lastResponse.status,
-			last_channel_id: lastChannel?.id ?? null,
-			last_request_path: lastRequestPath,
-		});
+		scheduleRuntimeEvent(
+			"warning",
+			"proxy_upstream_exhausted",
+			"proxy_upstream_exhausted",
+			{
+				path: targetPath,
+				model: downstreamModel,
+				status: lastResponse.status,
+				last_channel_id: lastChannel?.id ?? null,
+				last_request_path: lastRequestPath,
+			},
+		);
 	}
 
 	if (!selectedResponse) {
@@ -1242,7 +1420,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 			const errorCode = lastErrorDetails.errorCode ?? "upstream_unavailable";
 			return jsonError(c, 502, errorCode, errorCode);
 		}
-		console.error("[proxy:unavailable]", {
+		scheduleRuntimeEvent("error", "proxy_unavailable", "proxy_unavailable", {
 			path: targetPath,
 			model: downstreamModel,
 			latency_ms: Date.now() - requestStart,
@@ -1294,10 +1472,16 @@ proxy.all("/*", tokenAuth, async (c) => {
 				.then((streamUsage) => {
 					const usageValue = selectedImmediateUsage ?? streamUsage.usage;
 					if (streamUsage.timedOut) {
-						console.warn("[usage:stream_parse_timeout]", {
-							path: selectedRequestPath,
-							timeout_ms: STREAM_USAGE_PARSE_TIMEOUT_MS,
-						});
+						scheduleRuntimeEvent(
+							"warning",
+							"usage_stream_parse_timeout",
+							"usage_stream_parse_timeout",
+							{
+								path: selectedRequestPath,
+								timeout_ms: STREAM_USAGE_PARSE_TIMEOUT_MS,
+							},
+						);
+						const timeoutMessage = `usage_parse_timeout: stream usage parsing timed out after ${STREAM_USAGE_PARSE_TIMEOUT_MS}ms`;
 						finalizeUsage({
 							channelId: selectedChannel.id,
 							requestPath: selectedRequestPath,
@@ -1307,11 +1491,13 @@ proxy.all("/*", tokenAuth, async (c) => {
 							status: usageValue ? "ok" : "error",
 							upstreamStatus: selectedResponse.status,
 							errorCode: usageValue ? null : "usage_parse_timeout",
-							errorMessage: usageValue ? null : "usage_parse_timeout",
+							errorMessage: usageValue ? null : timeoutMessage,
 						});
 						return;
 					}
 					if (!usageValue) {
+						const streamUsageMissingMessage =
+							"usage_missing: stream completed without usage payload or header usage";
 						finalizeUsage({
 							channelId: selectedChannel.id,
 							requestPath: selectedRequestPath,
@@ -1321,7 +1507,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 							status: "error",
 							upstreamStatus: selectedResponse.status,
 							errorCode: "usage_missing",
-							errorMessage: "usage_missing",
+							errorMessage: streamUsageMissingMessage,
 						});
 						return;
 					}
@@ -1335,7 +1521,18 @@ proxy.all("/*", tokenAuth, async (c) => {
 						upstreamStatus: selectedResponse.status,
 					});
 				})
-				.catch(() => {
+				.catch((error) => {
+					const parseFailure = classifyStreamUsageParseError(error);
+					scheduleRuntimeEvent(
+						"warning",
+						"usage_stream_parse_failed",
+						"usage_stream_parse_failed",
+						{
+							path: selectedRequestPath,
+							error_code: parseFailure.errorCode,
+							error_message: parseFailure.errorMessage,
+						},
+					);
 					finalizeUsage({
 						channelId: selectedChannel.id,
 						requestPath: selectedRequestPath,
@@ -1344,8 +1541,10 @@ proxy.all("/*", tokenAuth, async (c) => {
 						usage: selectedImmediateUsage,
 						status: selectedImmediateUsage ? "ok" : "error",
 						upstreamStatus: selectedResponse.status,
-						errorCode: selectedImmediateUsage ? null : "usage_parse_failed",
-						errorMessage: selectedImmediateUsage ? null : "usage_parse_failed",
+						errorCode: selectedImmediateUsage ? null : parseFailure.errorCode,
+						errorMessage: selectedImmediateUsage
+							? null
+							: parseFailure.errorMessage,
 					});
 				})
 				.finally(() => {

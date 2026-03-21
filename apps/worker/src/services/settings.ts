@@ -11,6 +11,13 @@ import {
 	type CacheVersionScope,
 	readCacheVersionsFromStore,
 } from "./cache-version-store";
+import {
+	normalizeRuntimeEventLevels,
+	RUNTIME_EVENT_LEVEL_VALUES,
+	type RuntimeEventLevel,
+	recordRuntimeEvent,
+	resetRuntimeEventLevelSnapshot,
+} from "./runtime-events";
 
 const DEFAULT_LOG_RETENTION_DAYS = 30;
 const DEFAULT_SESSION_TTL_HOURS = 12;
@@ -28,6 +35,7 @@ const DEFAULT_CACHE_TOKENS_TTL_SECONDS = 15;
 const DEFAULT_CACHE_CHANNELS_TTL_SECONDS = 15;
 const DEFAULT_CACHE_CALL_TOKENS_TTL_SECONDS = 15;
 const DEFAULT_CACHE_SETTINGS_TTL_SECONDS = 30;
+const DEFAULT_RUNTIME_EVENT_RETENTION_DAYS = 30;
 const DEFAULT_PROXY_UPSTREAM_TIMEOUT_MS = 30000;
 const DEFAULT_PROXY_RETRY_MAX_RETRIES = 3;
 const DEFAULT_PROXY_USAGE_QUEUE_ENABLED = true;
@@ -63,6 +71,8 @@ const PROXY_STREAM_USAGE_MAX_PARSERS_KEY = "proxy_stream_usage_max_parsers";
 const PROXY_USAGE_QUEUE_ENABLED_KEY = "proxy_usage_queue_enabled";
 const USAGE_QUEUE_DAILY_LIMIT_KEY = "usage_queue_daily_limit";
 const USAGE_QUEUE_DIRECT_WRITE_RATIO_KEY = "usage_queue_direct_write_ratio";
+const RUNTIME_EVENT_RETENTION_KEY = "runtime_event_retention_days";
+const RUNTIME_EVENT_LEVELS_KEY = "runtime_event_levels";
 
 export type RuntimeProxyConfig = {
 	upstream_timeout_ms: number;
@@ -132,6 +142,9 @@ let sessionTtlSnapshot: SettingSnapshot<number> | null = null;
 let adminPasswordSnapshot: SettingSnapshot<string | null> | null = null;
 let checkinScheduleSnapshot: SettingSnapshot<string> | null = null;
 let modelCooldownSnapshot: SettingSnapshot<number> | null = null;
+let runtimeEventRetentionSnapshot: SettingSnapshot<number> | null = null;
+let runtimeEventLevelsSnapshot: SettingSnapshot<RuntimeEventLevel[]> | null =
+	null;
 type CacheControlSnapshot<T> = {
 	value: T;
 	expiresAt: number;
@@ -317,10 +330,19 @@ export async function bumpCacheVersions(
 		try {
 			await bumpCacheVersionsInStore(cacheVersionStore, mergedScopes);
 		} catch (error) {
-			console.warn("[cache-version-store:bump_failed]", {
-				error: error instanceof Error ? error.message : String(error),
-				scopes: mergedScopes,
-			});
+			try {
+				await recordRuntimeEvent(db, {
+					level: "warning",
+					code: "cache_version_store_bump_failed",
+					message: "cache_version_store_bump_failed",
+					context: {
+						error: error instanceof Error ? error.message : String(error),
+						scopes: mergedScopes,
+					},
+				});
+			} catch {
+				// ignore runtime logging failures
+			}
 		}
 	}
 	clearCacheConfigSnapshot();
@@ -605,9 +627,18 @@ export async function getCacheConfig(
 				fallbackVersions,
 			);
 		} catch (error) {
-			console.warn("[cache-version-store:read_failed]", {
-				error: error instanceof Error ? error.message : String(error),
-			});
+			try {
+				await recordRuntimeEvent(db, {
+					level: "warning",
+					code: "cache_version_store_read_failed",
+					message: "cache_version_store_read_failed",
+					context: {
+						error: error instanceof Error ? error.message : String(error),
+					},
+				});
+			} catch {
+				// ignore runtime logging failures
+			}
 		}
 	}
 	const value = {
@@ -856,6 +887,68 @@ export async function getModelFailureCooldownMinutes(
 	);
 }
 
+export async function getRuntimeEventRetentionDays(
+	db: D1Database,
+): Promise<number> {
+	return getCachedSetting(
+		runtimeEventRetentionSnapshot,
+		async () => {
+			const value = await readSetting(db, RUNTIME_EVENT_RETENTION_KEY);
+			return parsePositiveNumber(value, DEFAULT_RUNTIME_EVENT_RETENTION_DAYS);
+		},
+		(next) => {
+			runtimeEventRetentionSnapshot = next;
+		},
+	);
+}
+
+function parseRuntimeEventLevelsSetting(
+	value: string | null,
+): RuntimeEventLevel[] {
+	if (value === null || value === undefined) {
+		return [...RUNTIME_EVENT_LEVEL_VALUES];
+	}
+	const raw = value.trim();
+	if (!raw) {
+		return [];
+	}
+	return normalizeRuntimeEventLevels(raw.split(","));
+}
+
+export async function getRuntimeEventLevels(
+	db: D1Database,
+): Promise<RuntimeEventLevel[]> {
+	return getCachedSetting(
+		runtimeEventLevelsSnapshot,
+		async () => {
+			const value = await readSetting(db, RUNTIME_EVENT_LEVELS_KEY);
+			return parseRuntimeEventLevelsSetting(value);
+		},
+		(next) => {
+			runtimeEventLevelsSnapshot = next;
+		},
+	);
+}
+
+export async function setRuntimeEventRetentionDays(
+	db: D1Database,
+	days: number,
+): Promise<void> {
+	const value = Math.max(1, Math.floor(days)).toString();
+	await upsertSetting(db, RUNTIME_EVENT_RETENTION_KEY, value);
+	runtimeEventRetentionSnapshot = null;
+}
+
+export async function setRuntimeEventLevels(
+	db: D1Database,
+	levels: string[],
+): Promise<void> {
+	const normalized = normalizeRuntimeEventLevels(levels);
+	await upsertSetting(db, RUNTIME_EVENT_LEVELS_KEY, normalized.join(","));
+	runtimeEventLevelsSnapshot = null;
+	resetRuntimeEventLevelSnapshot();
+}
+
 export async function setModelFailureCooldownMinutes(
 	db: D1Database,
 	minutes: number,
@@ -888,6 +981,8 @@ export function resetSettingsSnapshots(): void {
 	adminPasswordSnapshot = null;
 	checkinScheduleSnapshot = null;
 	modelCooldownSnapshot = null;
+	runtimeEventRetentionSnapshot = null;
+	runtimeEventLevelsSnapshot = null;
 	cacheConfigSnapshot = null;
 	settingsCacheControlSnapshot = null;
 }

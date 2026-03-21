@@ -5,12 +5,18 @@ import {
 	shouldResetLastRun,
 } from "../services/checkin-scheduler";
 import {
+	RUNTIME_EVENT_LEVEL_VALUES,
+	recordRuntimeEvent,
+} from "../services/runtime-events";
+import {
 	bumpCacheVersions,
 	getCacheConfig,
 	getCheckinScheduleTime,
 	getModelFailureCooldownMinutes,
 	getProxyRuntimeSettings,
 	getRetentionDays,
+	getRuntimeEventLevels,
+	getRuntimeEventRetentionDays,
 	getRuntimeProxyConfig,
 	getSessionTtlHours,
 	isAdminPasswordSet,
@@ -20,6 +26,8 @@ import {
 	setModelFailureCooldownMinutes,
 	setProxyRuntimeSettings,
 	setRetentionDays,
+	setRuntimeEventLevels,
+	setRuntimeEventRetentionDays,
 	setSessionTtlHours,
 } from "../services/settings";
 import {
@@ -42,6 +50,10 @@ settings.get("/", async (c) => {
 	const modelFailureCooldownMinutes = await getModelFailureCooldownMinutes(
 		c.env.DB,
 	);
+	const runtimeEventRetentionDays = await getRuntimeEventRetentionDays(
+		c.env.DB,
+	);
+	const runtimeEventLevels = await getRuntimeEventLevels(c.env.DB);
 	const runtimeSettings = await getProxyRuntimeSettings(c.env.DB);
 	const runtimeConfig = getRuntimeProxyConfig(c.env, runtimeSettings);
 	const cacheConfig = await getCacheConfig(c.env.DB, c.env.CACHE_VERSION_STORE);
@@ -67,9 +79,16 @@ settings.get("/", async (c) => {
 				active: runtimeConfig.usage_queue_active,
 			};
 		} catch (error) {
-			console.warn("[settings:usage_queue_status_failed]", {
-				error: error instanceof Error ? error.message : String(error),
-			});
+			await recordRuntimeEvent(c.env.DB, {
+				level: "warning",
+				code: "settings_usage_queue_status_failed",
+				message: "settings_usage_queue_status_failed",
+				requestPath: c.req.path,
+				method: c.req.method,
+				context: {
+					error: error instanceof Error ? error.message : String(error),
+				},
+			}).catch(() => undefined);
 		}
 	} else {
 		usageQueueStatus = {
@@ -87,6 +106,8 @@ settings.get("/", async (c) => {
 		admin_password_set: adminPasswordSet,
 		checkin_schedule_time: checkinScheduleTime,
 		model_failure_cooldown_minutes: modelFailureCooldownMinutes,
+		runtime_event_retention_days: runtimeEventRetentionDays,
+		runtime_event_levels: runtimeEventLevels,
 		runtime_config: runtimeConfig,
 		runtime_settings: runtimeSettings,
 		cache_config: cacheConfig,
@@ -168,6 +189,55 @@ settings.put("/", async (c) => {
 			);
 		}
 		await setModelFailureCooldownMinutes(c.env.DB, minutes);
+		touched = true;
+	}
+
+	if (body.runtime_event_retention_days !== undefined) {
+		const days = Number(body.runtime_event_retention_days);
+		if (Number.isNaN(days) || days < 1) {
+			return jsonError(
+				c,
+				400,
+				"invalid_runtime_event_retention_days",
+				"invalid_runtime_event_retention_days",
+			);
+		}
+		await setRuntimeEventRetentionDays(c.env.DB, days);
+		touched = true;
+	}
+
+	if (body.runtime_event_levels !== undefined) {
+		let levelsRaw: string[] | null = null;
+		if (Array.isArray(body.runtime_event_levels)) {
+			levelsRaw = body.runtime_event_levels.map((item: unknown) =>
+				String(item),
+			);
+		} else if (typeof body.runtime_event_levels === "string") {
+			levelsRaw = body.runtime_event_levels.split(",");
+		} else if (body.runtime_event_levels === null) {
+			levelsRaw = [];
+		}
+		if (!levelsRaw) {
+			return jsonError(
+				c,
+				400,
+				"invalid_runtime_event_levels",
+				"invalid_runtime_event_levels",
+			);
+		}
+		const allowedLevels = new Set<string>(RUNTIME_EVENT_LEVEL_VALUES);
+		const normalizedLevels = levelsRaw
+			.map((item) => item.trim().toLowerCase())
+			.filter(Boolean);
+		if (normalizedLevels.some((level) => !allowedLevels.has(level))) {
+			return jsonError(
+				c,
+				400,
+				"invalid_runtime_event_levels",
+				"invalid_runtime_event_levels",
+			);
+		}
+		await setRuntimeEventLevels(c.env.DB, normalizedLevels);
 		touched = true;
 	}
 
