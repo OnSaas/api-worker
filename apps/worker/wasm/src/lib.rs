@@ -39,7 +39,12 @@ fn normalize_usage_value(raw: &Value) -> Option<NormalizedUsage> {
     let obj = raw.as_object()?;
     let prompt_tokens = pick_number(
         obj,
-        &["prompt_tokens", "promptTokens", "input_tokens", "inputTokens"],
+        &[
+            "prompt_tokens",
+            "promptTokens",
+            "input_tokens",
+            "inputTokens",
+        ],
     );
     let completion_tokens = pick_number(
         obj,
@@ -52,7 +57,13 @@ fn normalize_usage_value(raw: &Value) -> Option<NormalizedUsage> {
     );
     let mut total_tokens = pick_number(
         obj,
-        &["total_tokens", "totalTokens", "total", "tokens", "token_count"],
+        &[
+            "total_tokens",
+            "totalTokens",
+            "total",
+            "tokens",
+            "token_count",
+        ],
     );
     if total_tokens.is_none() && (prompt_tokens.is_some() || completion_tokens.is_some()) {
         total_tokens = Some(prompt_tokens.unwrap_or(0) + completion_tokens.unwrap_or(0));
@@ -451,7 +462,9 @@ pub fn gemini_usage_tokens_json(payload_json: &str) -> String {
             completion_tokens: 0,
             total_tokens: 0,
         })
-        .unwrap_or_else(|_| "{\"promptTokens\":0,\"completionTokens\":0,\"totalTokens\":0}".to_string());
+        .unwrap_or_else(|_| {
+            "{\"promptTokens\":0,\"completionTokens\":0,\"totalTokens\":0}".to_string()
+        });
     };
     serde_json::to_string(&gemini_usage_tokens(&payload)).unwrap_or_else(|_| {
         "{\"promptTokens\":0,\"completionTokens\":0,\"totalTokens\":0}".to_string()
@@ -568,8 +581,16 @@ pub fn adapt_chat_json(direction: &str, payload_json: &str, model: &str, now_ms:
                 .and_then(|v| v.as_array())
                 .cloned()
                 .unwrap_or_default();
-            let first = choices.first().and_then(|v| v.as_object()).cloned().unwrap_or_default();
-            let message = first.get("message").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+            let first = choices
+                .first()
+                .and_then(|v| v.as_object())
+                .cloned()
+                .unwrap_or_default();
+            let message = first
+                .get("message")
+                .and_then(|v| v.as_object())
+                .cloned()
+                .unwrap_or_default();
             let usage = payload
                 .as_object()
                 .and_then(|o| o.get("usage"))
@@ -606,7 +627,8 @@ pub fn adapt_chat_json(direction: &str, payload_json: &str, model: &str, now_ms:
                 .unwrap_or_default();
             let prompt = to_number(usage.get("input_tokens")).unwrap_or(0);
             let completion = to_number(usage.get("output_tokens")).unwrap_or(0);
-            let text = anthropic_content_to_text(payload.as_object().and_then(|o| o.get("content")));
+            let text =
+                anthropic_content_to_text(payload.as_object().and_then(|o| o.get("content")));
             let stop_reason = payload
                 .as_object()
                 .and_then(|o| o.get("stop_reason"))
@@ -677,8 +699,16 @@ pub fn adapt_chat_json(direction: &str, payload_json: &str, model: &str, now_ms:
                 .and_then(|v| v.as_array())
                 .cloned()
                 .unwrap_or_default();
-            let first = choices.first().and_then(|v| v.as_object()).cloned().unwrap_or_default();
-            let message = first.get("message").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+            let first = choices
+                .first()
+                .and_then(|v| v.as_object())
+                .cloned()
+                .unwrap_or_default();
+            let message = first
+                .get("message")
+                .and_then(|v| v.as_object())
+                .cloned()
+                .unwrap_or_default();
             let text = openai_content_to_text(message.get("content"));
             let usage = payload
                 .as_object()
@@ -705,7 +735,8 @@ pub fn adapt_chat_json(direction: &str, payload_json: &str, model: &str, now_ms:
             })
         }
         "anthropic_to_gemini" => {
-            let text = anthropic_content_to_text(payload.as_object().and_then(|o| o.get("content")));
+            let text =
+                anthropic_content_to_text(payload.as_object().and_then(|o| o.get("content")));
             let usage = payload
                 .as_object()
                 .and_then(|o| o.get("usage"))
@@ -750,9 +781,7 @@ fn numeric_value(value: Option<&Value>) -> Option<f64> {
 }
 
 fn number_or_null(value: Option<&Value>) -> Value {
-    numeric_value(value)
-        .map(Value::from)
-        .unwrap_or(Value::Null)
+    numeric_value(value).map(Value::from).unwrap_or(Value::Null)
 }
 
 fn value_to_text(value: Option<&Value>) -> String {
@@ -905,7 +934,10 @@ fn normalize_tools_from_gemini(raw: Option<&Value>) -> Vec<Value> {
         let Some(item_obj) = item.as_object() else {
             continue;
         };
-        let Some(declarations) = item_obj.get("functionDeclarations").and_then(|v| v.as_array()) else {
+        let Some(declarations) = item_obj
+            .get("functionDeclarations")
+            .and_then(|v| v.as_array())
+        else {
             continue;
         };
         for declaration in declarations {
@@ -1030,7 +1062,10 @@ fn normalize_anthropic_messages(raw: Option<&Value>) -> Vec<Value> {
                 let Some(part_obj) = part.as_object() else {
                     continue;
                 };
-                let part_type = part_obj.get("type").and_then(|v| v.as_str()).unwrap_or_default();
+                let part_type = part_obj
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default();
                 if part_type == "text" {
                     text_parts.push(
                         part_obj
@@ -1094,8 +1129,15 @@ fn normalize_gemini_messages(raw: Option<&Value>) -> Vec<Value> {
         let Some(item_obj) = item.as_object() else {
             continue;
         };
-        let raw_role = item_obj.get("role").and_then(|v| v.as_str()).unwrap_or("user");
-        let role = if raw_role == "model" { "assistant" } else { "user" };
+        let raw_role = item_obj
+            .get("role")
+            .and_then(|v| v.as_str())
+            .unwrap_or("user");
+        let role = if raw_role == "model" {
+            "assistant"
+        } else {
+            "user"
+        };
         let mut text_parts: Vec<String> = vec![];
         let mut tool_calls: Vec<Value> = vec![];
         let mut tool_results: Vec<Value> = vec![];
@@ -1116,9 +1158,7 @@ fn normalize_gemini_messages(raw: Option<&Value>) -> Vec<Value> {
                         }));
                     }
                 }
-                if let Some(fn_resp) = part_obj
-                    .get("functionResponse")
-                    .and_then(|v| v.as_object())
+                if let Some(fn_resp) = part_obj.get("functionResponse").and_then(|v| v.as_object())
                 {
                     let tool_name = fn_resp
                         .get("name")
@@ -1187,6 +1227,7 @@ fn normalize_chat_request_value(
             "model": model_value,
             "stream": is_stream,
             "messages": messages,
+            "rawResponsesBody": Value::Object(body.clone()),
             "tools": normalize_tools_from_openai(body.get("tools")),
             "toolChoice": body.get("tool_choice").cloned().unwrap_or(Value::Null),
             "temperature": number_or_null(body.get("temperature")),
@@ -1252,7 +1293,10 @@ fn normalize_chat_request_value(
     }))
 }
 
-fn resolve_override(override_value: Option<&Value>, model: &str) -> (Option<String>, Option<String>) {
+fn resolve_override(
+    override_value: Option<&Value>,
+    model: &str,
+) -> (Option<String>, Option<String>) {
     let Some(raw) = override_value.and_then(|v| v.as_str()) else {
         return (None, None);
     };
@@ -1265,6 +1309,10 @@ fn resolve_override(override_value: Option<&Value>, model: &str) -> (Option<Stri
         return (Some(resolved), None);
     }
     (None, Some(resolved))
+}
+
+fn is_openai_responses_target(target: &str) -> bool {
+    target.to_ascii_lowercase().contains("/responses")
 }
 
 fn tool_args_to_string(value: Option<&Value>) -> String {
@@ -1296,16 +1344,46 @@ fn build_upstream_chat_request_value(
         .unwrap_or_default();
     let endpoint_overrides_obj = endpoint_overrides.as_object().cloned().unwrap_or_default();
 
+    if provider == "openai" && endpoint == "responses" {
+        let (override_absolute, override_path) =
+            resolve_override(endpoint_overrides_obj.get("chat_url"), model);
+        let mut absolute_url: Option<String> = None;
+        let mut path = "/v1/responses".to_string();
+        if let Some(candidate_absolute) = override_absolute {
+            if is_openai_responses_target(&candidate_absolute) {
+                absolute_url = Some(candidate_absolute);
+            }
+        }
+        if absolute_url.is_none() {
+            if let Some(candidate_path) = override_path {
+                if is_openai_responses_target(&candidate_path) {
+                    path = candidate_path;
+                }
+            }
+        }
+        let mut body = normalized
+            .get("rawResponsesBody")
+            .and_then(|v| v.as_object())
+            .cloned()
+            .unwrap_or_default();
+        if !model.is_empty() {
+            body.insert("model".to_string(), Value::String(model.to_string()));
+        }
+        if is_stream {
+            body.insert("stream".to_string(), Value::Bool(true));
+        }
+        return Some(json!({
+            "path": path,
+            "fallbackPath": if absolute_url.is_none() { Value::String("/responses".to_string()) } else { Value::Null },
+            "absoluteUrl": absolute_url.map(Value::String).unwrap_or(Value::Null),
+            "body": Value::Object(body),
+        }));
+    }
+
     if provider == "openai" {
         let (absolute_url, override_path) =
             resolve_override(endpoint_overrides_obj.get("chat_url"), model);
-        let path = override_path.unwrap_or_else(|| {
-            if endpoint == "responses" {
-                "/v1/responses".to_string()
-            } else {
-                "/v1/chat/completions".to_string()
-            }
-        });
+        let path = override_path.unwrap_or_else(|| "/v1/chat/completions".to_string());
         let mut body = Map::new();
         body.insert(
             "model".to_string(),
@@ -1320,8 +1398,14 @@ fn build_upstream_chat_request_value(
             let Some(msg_obj) = message.as_object() else {
                 continue;
             };
-            let role = msg_obj.get("role").and_then(|v| v.as_str()).unwrap_or_default();
-            let content = msg_obj.get("content").and_then(|v| v.as_str()).unwrap_or_default();
+            let role = msg_obj
+                .get("role")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let content = msg_obj
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
             if role == "tool" {
                 body_messages.push(json!({
                     "role": "tool",
@@ -1346,8 +1430,14 @@ fn build_upstream_chat_request_value(
                         .iter()
                         .filter_map(|call| {
                             let call_obj = call.as_object()?;
-                            let id = call_obj.get("id").and_then(|v| v.as_str()).unwrap_or_default();
-                            let name = call_obj.get("name").and_then(|v| v.as_str()).unwrap_or_default();
+                            let id = call_obj
+                                .get("id")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default();
+                            let name = call_obj
+                                .get("name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default();
                             if name.is_empty() {
                                 return None;
                             }
@@ -1416,7 +1506,7 @@ fn build_upstream_chat_request_value(
         }
         return Some(json!({
             "path": path,
-            "fallbackPath": if endpoint == "responses" && absolute_url.is_none() { Value::String("/responses".to_string()) } else { Value::Null },
+            "fallbackPath": Value::Null,
             "absoluteUrl": absolute_url.map(Value::String).unwrap_or(Value::Null),
             "body": Value::Object(body),
         }));
@@ -1432,8 +1522,14 @@ fn build_upstream_chat_request_value(
             let Some(msg_obj) = message.as_object() else {
                 continue;
             };
-            let role = msg_obj.get("role").and_then(|v| v.as_str()).unwrap_or_default();
-            let content = msg_obj.get("content").and_then(|v| v.as_str()).unwrap_or_default();
+            let role = msg_obj
+                .get("role")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let content = msg_obj
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
             if role == "system" {
                 if !content.is_empty() {
                     system_texts.push(content.to_string());
@@ -1464,7 +1560,10 @@ fn build_upstream_chat_request_value(
                         let Some(call_obj) = call.as_object() else {
                             continue;
                         };
-                        let name = call_obj.get("name").and_then(|v| v.as_str()).unwrap_or_default();
+                        let name = call_obj
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default();
                         if name.is_empty() {
                             continue;
                         }
@@ -1572,8 +1671,14 @@ fn build_upstream_chat_request_value(
         let Some(msg_obj) = message.as_object() else {
             continue;
         };
-        let role = msg_obj.get("role").and_then(|v| v.as_str()).unwrap_or_default();
-        let content = msg_obj.get("content").and_then(|v| v.as_str()).unwrap_or_default();
+        let role = msg_obj
+            .get("role")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let content = msg_obj
+            .get("content")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
         if role == "system" {
             if !content.is_empty() {
                 system_texts.push(content.to_string());
@@ -1603,7 +1708,10 @@ fn build_upstream_chat_request_value(
                     let Some(call_obj) = call.as_object() else {
                         continue;
                     };
-                    let name = call_obj.get("name").and_then(|v| v.as_str()).unwrap_or_default();
+                    let name = call_obj
+                        .get("name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default();
                     if name.is_empty() {
                         continue;
                     }
@@ -1666,10 +1774,16 @@ fn build_upstream_chat_request_value(
         generation_config.insert("topP".to_string(), Value::from(top_p));
     }
     if let Some(max_output_tokens) = numeric_value(normalized.get("maxTokens")) {
-        generation_config.insert("maxOutputTokens".to_string(), Value::from(max_output_tokens));
+        generation_config.insert(
+            "maxOutputTokens".to_string(),
+            Value::from(max_output_tokens),
+        );
     }
     if !generation_config.is_empty() {
-        body.insert("generationConfig".to_string(), Value::Object(generation_config));
+        body.insert(
+            "generationConfig".to_string(),
+            Value::Object(generation_config),
+        );
     }
     Some(json!({
         "path": final_path,
@@ -1724,7 +1838,12 @@ pub fn build_upstream_chat_request(
 }
 
 #[wasm_bindgen]
-pub fn adapt_sse_line(payload_json: &str, upstream: &str, downstream: &str, _model: &str) -> String {
+pub fn adapt_sse_line(
+    payload_json: &str,
+    upstream: &str,
+    downstream: &str,
+    _model: &str,
+) -> String {
     let Some(payload) = parse_json(payload_json) else {
         return "null".to_string();
     };
