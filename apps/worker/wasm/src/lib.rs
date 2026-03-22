@@ -974,6 +974,48 @@ fn normalize_openai_messages(raw: Option<&Value>) -> Vec<Value> {
         let Some(item_obj) = item.as_object() else {
             continue;
         };
+        let item_type = item_obj
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        if item_obj.get("role").is_none() {
+            if item_type == "function_call_output" {
+                messages.push(json!({
+                    "role": "tool",
+                    "content": value_to_text(item_obj.get("output").or_else(|| item_obj.get("content"))),
+                    "toolCallId": item_obj.get("call_id").or_else(|| item_obj.get("tool_call_id")).and_then(|v| v.as_str()).map(|v| v.to_string())
+                }));
+                continue;
+            }
+            if item_type == "function_call" {
+                let function_obj = item_obj.get("function").and_then(|v| v.as_object());
+                let name = item_obj.get("name").and_then(|v| v.as_str()).or_else(|| {
+                    function_obj
+                        .and_then(|fn_obj| fn_obj.get("name"))
+                        .and_then(|v| v.as_str())
+                });
+                if let Some(name) = name {
+                    let args_value = item_obj
+                        .get("arguments")
+                        .or_else(|| item_obj.get("args"))
+                        .or_else(|| item_obj.get("input"))
+                        .or_else(|| function_obj.and_then(|fn_obj| fn_obj.get("arguments")))
+                        .or_else(|| function_obj.and_then(|fn_obj| fn_obj.get("args")))
+                        .or_else(|| function_obj.and_then(|fn_obj| fn_obj.get("input")));
+                    messages.push(json!({
+                        "role": "assistant",
+                        "content": "",
+                        "toolCalls": [{
+                            "id": item_obj.get("call_id").or_else(|| item_obj.get("id")).and_then(|v| v.as_str()).map(|v| v.to_string()).unwrap_or_else(|| format!("call_{}_fc", idx)),
+                            "name": name,
+                            "args": normalize_tool_args_value(args_value)
+                        }]
+                    }));
+                }
+                continue;
+            }
+            continue;
+        }
         let Some(role) = item_obj.get("role").and_then(|v| v.as_str()) else {
             continue;
         };
@@ -981,7 +1023,7 @@ fn normalize_openai_messages(raw: Option<&Value>) -> Vec<Value> {
             messages.push(json!({
                 "role": "tool",
                 "content": value_to_text(item_obj.get("content")),
-                "toolCallId": item_obj.get("tool_call_id").and_then(|v| v.as_str()).map(|v| v.to_string())
+                "toolCallId": item_obj.get("tool_call_id").or_else(|| item_obj.get("call_id")).and_then(|v| v.as_str()).map(|v| v.to_string())
             }));
             continue;
         }
@@ -1006,22 +1048,23 @@ fn normalize_openai_messages(raw: Option<&Value>) -> Vec<Value> {
                 };
                 let call_id = call_obj
                     .get("id")
+                    .or_else(|| call_obj.get("call_id"))
                     .and_then(|v| v.as_str())
                     .map(|v| v.to_string())
                     .unwrap_or_else(|| format!("call_{}_{}", idx, call_idx));
                 tool_calls.push(json!({
                     "id": call_id,
                     "name": name,
-                    "args": normalize_tool_args_value(fn_obj.get("arguments"))
+                    "args": normalize_tool_args_value(fn_obj.get("arguments").or_else(|| fn_obj.get("args")).or_else(|| fn_obj.get("input")))
                 }));
             }
         }
         if let Some(fn_call) = item_obj.get("function_call").and_then(|v| v.as_object()) {
             if let Some(name) = fn_call.get("name").and_then(|v| v.as_str()) {
                 tool_calls.push(json!({
-                    "id": format!("call_{}_legacy", idx),
+                    "id": fn_call.get("id").or_else(|| fn_call.get("call_id")).and_then(|v| v.as_str()).map(|v| v.to_string()).unwrap_or_else(|| format!("call_{}_legacy", idx)),
                     "name": name,
-                    "args": normalize_tool_args_value(fn_call.get("arguments"))
+                    "args": normalize_tool_args_value(fn_call.get("arguments").or_else(|| fn_call.get("args")).or_else(|| fn_call.get("input")))
                 }));
             }
         }
