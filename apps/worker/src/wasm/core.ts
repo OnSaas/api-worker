@@ -49,7 +49,7 @@ const ensureWasmCoreInitialized = (): void => {
 	if (wasmCoreInitialized) {
 		return;
 	}
-	initSync(wasmModule);
+	initSync({ module: wasmModule });
 	wasmCoreInitialized = true;
 };
 

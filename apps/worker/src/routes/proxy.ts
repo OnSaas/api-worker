@@ -209,6 +209,155 @@ function isResponsesToolCallNotFoundMessage(message: string | null): boolean {
 	return normalized.includes(RESPONSES_TOOL_CALL_NOT_FOUND_SNIPPET);
 }
 
+type ToolSchemaValidationIssue = {
+	code: "invalid_function_parameters";
+	message: string;
+	param: string;
+	errorMetaJson: string;
+};
+
+function validateRequiredArrayInSchema(
+	schema: unknown,
+	basePath: string,
+): string | null {
+	if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+		return null;
+	}
+	const record = schema as Record<string, unknown>;
+	if (
+		Object.prototype.hasOwnProperty.call(record, "required") &&
+		record.required !== undefined &&
+		!Array.isArray(record.required)
+	) {
+		return `${basePath}.required`;
+	}
+	if (
+		Object.prototype.hasOwnProperty.call(record, "properties") &&
+		record.properties !== undefined
+	) {
+		const properties = record.properties;
+		if (!properties || typeof properties !== "object" || Array.isArray(properties)) {
+			return `${basePath}.properties`;
+		}
+		for (const [key, child] of Object.entries(
+			properties as Record<string, unknown>,
+		)) {
+			const nestedPath = validateRequiredArrayInSchema(
+				child,
+				`${basePath}.properties.${key}`,
+			);
+			if (nestedPath) {
+				return nestedPath;
+			}
+		}
+	}
+	if (
+		Object.prototype.hasOwnProperty.call(record, "items") &&
+		record.items !== undefined
+	) {
+		const items = record.items;
+		if (Array.isArray(items)) {
+			for (let i = 0; i < items.length; i += 1) {
+				const nestedPath = validateRequiredArrayInSchema(
+					items[i],
+					`${basePath}.items[${i}]`,
+				);
+				if (nestedPath) {
+					return nestedPath;
+				}
+			}
+		} else if (items && typeof items === "object") {
+			const nestedPath = validateRequiredArrayInSchema(items, `${basePath}.items`);
+			if (nestedPath) {
+				return nestedPath;
+			}
+		} else if (items !== true && items !== false) {
+			return `${basePath}.items`;
+		}
+	}
+	for (const key of ["allOf", "anyOf", "oneOf"] as const) {
+		if (
+			Object.prototype.hasOwnProperty.call(record, key) &&
+			record[key] !== undefined
+		) {
+			const group = record[key];
+			if (!Array.isArray(group)) {
+				return `${basePath}.${key}`;
+			}
+			for (let i = 0; i < group.length; i += 1) {
+				const nestedPath = validateRequiredArrayInSchema(
+					group[i],
+					`${basePath}.${key}[${i}]`,
+				);
+				if (nestedPath) {
+					return nestedPath;
+				}
+			}
+		}
+	}
+	return null;
+}
+
+function validateToolSchemasInBody(
+	body: Record<string, unknown> | null,
+): ToolSchemaValidationIssue | null {
+	if (!body || !Array.isArray(body.tools)) {
+		return null;
+	}
+	for (let i = 0; i < body.tools.length; i += 1) {
+		const rawTool = body.tools[i];
+		if (!rawTool || typeof rawTool !== "object" || Array.isArray(rawTool)) {
+			continue;
+		}
+		const toolRecord = rawTool as Record<string, unknown>;
+		const toolType = normalizeStringField(toolRecord.type)?.toLowerCase();
+		let functionName = normalizeStringField(toolRecord.name);
+		let parameters: unknown = undefined;
+		let paramPath: string | null = null;
+		const nestedFunction = toolRecord.function;
+		if (
+			toolType === "function" &&
+			nestedFunction &&
+			typeof nestedFunction === "object" &&
+			!Array.isArray(nestedFunction)
+		) {
+			const fnRecord = nestedFunction as Record<string, unknown>;
+			functionName = normalizeStringField(fnRecord.name) ?? functionName;
+			parameters = fnRecord.parameters;
+			paramPath = `tools[${i}].function.parameters`;
+		} else if (toolType === "function" || "parameters" in toolRecord) {
+			parameters = toolRecord.parameters;
+			paramPath = `tools[${i}].parameters`;
+		}
+		if (!paramPath || parameters === undefined) {
+			continue;
+		}
+		const issuePath =
+			parameters === null ||
+			typeof parameters !== "object" ||
+			Array.isArray(parameters)
+				? paramPath
+				: validateRequiredArrayInSchema(parameters, paramPath);
+		if (!issuePath) {
+			continue;
+		}
+		const message = issuePath.endsWith(".required")
+			? `Invalid schema for function '${functionName ?? "unknown"}': required is not of type 'array'.`
+			: `Invalid schema for function '${functionName ?? "unknown"}': ${issuePath} is invalid.`;
+		return {
+			code: "invalid_function_parameters",
+			message,
+			param: issuePath,
+			errorMetaJson: JSON.stringify({
+				type: "local_validation",
+				param: issuePath,
+				status: 400,
+			}),
+		};
+	}
+	return null;
+}
+
 function extractOpenAiResponseIdFromJson(payload: unknown): string | null {
 	if (!payload || typeof payload !== "object") {
 		return null;
@@ -1253,6 +1402,27 @@ proxy.all("/*", tokenAuth, async (c) => {
 			},
 		});
 	};
+	const toolSchemaIssue = validateToolSchemasInBody(parsedBody);
+	if (toolSchemaIssue) {
+		scheduleRuntimeEvent(
+			"warning",
+			"invalid_function_parameters_precheck",
+			"invalid_function_parameters_precheck",
+			{
+				param: toolSchemaIssue.param,
+			},
+		);
+		recordEarlyUsage({
+			status: 400,
+			code: toolSchemaIssue.code,
+			message: toolSchemaIssue.message,
+			failureStage: "request_validation",
+			failureReason: toolSchemaIssue.code,
+			usageSource: "none",
+			errorMetaJson: toolSchemaIssue.errorMetaJson,
+		});
+		return jsonErrorWithTrace(400, toolSchemaIssue.message, toolSchemaIssue.code);
+	}
 
 	const activeChannelsCacheKey = buildActiveChannelsKey(
 		cacheConfig.version_channels,
@@ -2009,7 +2179,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 			const normalizedErrorMessage =
 				normalizeMessage(errorInfo.errorMessage) ?? normalizedErrorCode;
 				const responsesToolCallMismatch =
-					responsesRequestHints?.hasFunctionCallOutput === true &&
+					downstreamProvider === "openai" &&
 					isResponsesToolCallNotFoundMessage(normalizedErrorMessage);
 				const streamOptionsUnsupported =
 					shouldHandleStreamOptions &&
@@ -2178,12 +2348,9 @@ proxy.all("/*", tokenAuth, async (c) => {
 	}
 
 	if (!selectedResponse) {
-		if (
-			responsesRequestHints?.hasFunctionCallOutput &&
-			responsesToolCallMismatchChannels.length > 0
-		) {
+		if (responsesToolCallMismatchChannels.length > 0) {
 			const code = "responses_tool_call_chain_mismatch";
-			const details = `responses_tool_call_chain_mismatch: previous_response_id=${responsesRequestHints.previousResponseId ?? "-"}, channels=${responsesToolCallMismatchChannels.join(",")}`;
+			const details = `responses_tool_call_chain_mismatch: previous_response_id=${responsesRequestHints?.previousResponseId ?? "-"}, channels=${responsesToolCallMismatchChannels.join(",")}`;
 			recordEarlyUsage({
 				status: 409,
 				code,
