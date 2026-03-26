@@ -3,9 +3,12 @@
 **/.DS_Store
 **/.env
 **/.env.*
+!.env.agent.example
 **/.wrangler
 **/target
 **/tests
+playwright-report
+test-results
 
 .helloagents/plan
 .helloagents/archive

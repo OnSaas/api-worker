@@ -147,6 +147,17 @@ bun run format
 bun run check
 ```
 
+## Agent 协作规范
+
+- 统一执行规范：`AGENTS.md`
+- Agent 本地环境变量模板：`.env.agent.example`
+
+约定：
+
+- 任务完成后必须执行格式化与检测。
+- 前端改动必须使用自动化工具回归关键交互。
+- 后端改动必须通过直接请求验证接口行为。
+
 ## Worker 绑定与运行配置
 
 关键配置位于 `apps/worker/wrangler.toml`：
@@ -154,9 +165,9 @@ bun run check
 - D1: `DB`
 - KV（热点只读数据）: `KV_HOT`
 - Static Assets: `ASSETS`（目录 `../ui/dist`）
-- Durable Objects: `CHECKIN_SCHEDULER`, `CACHE_VERSION_STORE`
+- Durable Objects: `CHECKIN_SCHEDULER`
 - Service Binding: `ATTEMPT_WORKER`（绑定到 `attempt-worker`）
-- 可选环境绑定：`CORS_ORIGIN`（用于限制管理台跨域来源）
+- CORS 默认值：`*`（如需限制来源，可配置可选绑定 `CORS_ORIGIN`）
 
 注意：
 
