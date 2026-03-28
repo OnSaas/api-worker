@@ -10,7 +10,7 @@
 
 ## 2. 本地环境变量
 
-Agent 本地运行前，先根据 `.env.agent.example` 配置环境变量。
+Agent 本地运行前，若不存在 `.env.agent`，先参考 `.env.agent.example` 创建本地 `.env.agent`（模板仅作参考）。
 
 ## 3. 完成后必须执行
 

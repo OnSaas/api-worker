@@ -150,7 +150,8 @@ bun run check
 ## Agent 协作规范
 
 - 统一执行规范：`AGENTS.md`
-- Agent 本地环境变量模板：`.env.agent.example`
+- Agent 本地环境变量文件：`.env.agent`（本地创建，不入库）
+- Agent 环境变量参考模板：`.env.agent.example`
 
 约定：
 
