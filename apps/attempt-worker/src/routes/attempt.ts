@@ -4,17 +4,33 @@ import {
 	repairOpenAiToolCallChain,
 	validateOpenAiToolCallChain,
 } from "../../../shared-core/src";
+import { safeJsonParse } from "../../../worker/src/utils/json";
+import {
+	parseUsageFromHeaders,
+	parseUsageFromSse,
+} from "../../../worker/src/utils/usage";
 import type { AppEnv } from "../env";
 
 const ATTEMPT_RESPONSE_PATH_HEADER = "x-ha-attempt-response-path";
 const ATTEMPT_LATENCY_HEADER = "x-ha-attempt-latency-ms";
 const ATTEMPT_UPSTREAM_REQUEST_ID_HEADER = "x-ha-attempt-upstream-request-id";
 const ATTEMPT_ERROR_CODE_HEADER = "x-ha-attempt-error-code";
+const ATTEMPT_STREAM_USAGE_PROCESSED_HEADER =
+	"x-ha-attempt-stream-usage-processed";
+const ATTEMPT_STREAM_FIRST_TOKEN_LATENCY_HEADER =
+	"x-ha-attempt-stream-first-token-latency-ms";
+const ATTEMPT_STREAM_META_PARTIAL_HEADER = "x-ha-attempt-stream-meta-partial";
+const ATTEMPT_STREAM_META_REASON_HEADER = "x-ha-attempt-stream-meta-reason";
+const ATTEMPT_RESPONSE_ID_HEADER = "x-ha-attempt-response-id";
 const DISPATCH_ATTEMPT_INDEX_HEADER = "x-ha-dispatch-attempt-index";
 const DISPATCH_CHANNEL_ID_HEADER = "x-ha-dispatch-channel-id";
 const DISPATCH_STOP_RETRY_HEADER = "x-ha-dispatch-stop-retry";
 const STREAM_OPTIONS_UNSUPPORTED_SNIPPET = "unsupported parameter";
 const STREAM_OPTIONS_PARAM_NAME = "stream_options";
+const ATTEMPT_STREAM_USAGE_PARSE_TIMEOUT_MS = 1200;
+const ATTEMPT_STREAM_USAGE_MAX_BYTES = 96 * 1024;
+const ATTEMPT_RESPONSE_ID_PARSE_TIMEOUT_MS = 1200;
+const ATTEMPT_RESPONSE_ID_PARSE_MAX_BYTES = 64 * 1024;
 
 type AttemptRequest = {
 	method: string;
@@ -135,7 +151,9 @@ function normalizeRetryConfig(
 		Number.isFinite(sleepRaw) && sleepRaw >= 0 ? Math.floor(sleepRaw) : 0;
 	return {
 		sleepMs,
-		skipErrorCodeSet: new Set(normalizeRetryErrorCodeList(payload?.skipErrorCodes)),
+		skipErrorCodeSet: new Set(
+			normalizeRetryErrorCodeList(payload?.skipErrorCodes),
+		),
 		sleepErrorCodeSet: new Set(
 			normalizeRetryErrorCodeList(payload?.sleepErrorCodes),
 		),
@@ -360,6 +378,167 @@ function detectOpenAiEndpointType(path: string): "chat" | "responses" | null {
 	return null;
 }
 
+function extractOpenAiResponseIdFromJson(payload: unknown): string | null {
+	if (!payload || typeof payload !== "object") {
+		return null;
+	}
+	const record = payload as Record<string, unknown>;
+	const objectType = normalizeMessage(
+		String(record.object ?? ""),
+	)?.toLowerCase();
+	if (objectType && objectType !== "response") {
+		return null;
+	}
+	const id = record.id;
+	return typeof id === "string" && id.trim().length > 0 ? id.trim() : null;
+}
+
+async function extractOpenAiResponseIdFromSse(
+	response: Response,
+	maxBytes = ATTEMPT_RESPONSE_ID_PARSE_MAX_BYTES,
+	timeoutMs = ATTEMPT_RESPONSE_ID_PARSE_TIMEOUT_MS,
+): Promise<string | null> {
+	if (!response.body) {
+		return null;
+	}
+	const reader = response.body.getReader();
+	const decoder = new TextDecoder();
+	const startedAt = Date.now();
+	let bytesRead = 0;
+	let buffer = "";
+	try {
+		while (Date.now() - startedAt <= timeoutMs) {
+			const { done, value } = await reader.read();
+			if (done) {
+				break;
+			}
+			bytesRead += value?.byteLength ?? 0;
+			if (bytesRead > maxBytes) {
+				await reader.cancel();
+				break;
+			}
+			buffer += decoder.decode(value, { stream: true });
+			let newlineIndex = buffer.indexOf("\n");
+			while (newlineIndex !== -1) {
+				const line = buffer.slice(0, newlineIndex).trim();
+				buffer = buffer.slice(newlineIndex + 1);
+				if (!line.startsWith("data:")) {
+					newlineIndex = buffer.indexOf("\n");
+					continue;
+				}
+				const payload = line.slice(5).trim();
+				if (!payload || payload === "[DONE]") {
+					newlineIndex = buffer.indexOf("\n");
+					continue;
+				}
+				const parsed = safeJsonParse<Record<string, unknown> | null>(
+					payload,
+					null,
+				);
+				if (!parsed) {
+					newlineIndex = buffer.indexOf("\n");
+					continue;
+				}
+				const responseObj =
+					parsed.response && typeof parsed.response === "object"
+						? (parsed.response as Record<string, unknown>)
+						: null;
+				const responseId =
+					(typeof responseObj?.id === "string" && responseObj.id.trim()) ||
+					(normalizeMessage(String(parsed.object ?? ""))?.toLowerCase() ===
+					"response"
+						? normalizeMessage(String(parsed.id ?? ""))
+						: null);
+				if (responseId) {
+					await reader.cancel();
+					return responseId;
+				}
+				newlineIndex = buffer.indexOf("\n");
+			}
+		}
+		return null;
+	} catch {
+		return null;
+	} finally {
+		reader.releaseLock();
+	}
+}
+
+async function collectAttemptStreamMeta(
+	response: Response,
+	responsePath: string,
+): Promise<Record<string, string>> {
+	const contentType = response.headers.get("content-type") ?? "";
+	const endpointType = detectOpenAiEndpointType(responsePath);
+	const isStreamResponse = contentType.includes("text/event-stream");
+	const meta: Record<string, string> = {};
+	if (!response.ok) {
+		return meta;
+	}
+
+	if (endpointType === "responses") {
+		let responseId: string | null = null;
+		if (isStreamResponse) {
+			responseId = await extractOpenAiResponseIdFromSse(response.clone());
+		} else if (contentType.includes("application/json")) {
+			const payload = await response
+				.clone()
+				.json()
+				.catch(() => null);
+			responseId = extractOpenAiResponseIdFromJson(payload);
+		}
+		if (responseId) {
+			meta[ATTEMPT_RESPONSE_ID_HEADER] = responseId;
+		}
+	}
+
+	if (!isStreamResponse || !endpointType) {
+		return meta;
+	}
+
+	meta[ATTEMPT_STREAM_USAGE_PROCESSED_HEADER] = "1";
+	let usage = parseUsageFromHeaders(response.headers);
+	let firstTokenLatencyMs: number | null = null;
+	let streamMetaPartial = false;
+	let streamMetaReason: string | null = null;
+
+	if (!usage) {
+		const streamUsage = await parseUsageFromSse(response.clone(), {
+			mode: "full",
+			timeoutMs: ATTEMPT_STREAM_USAGE_PARSE_TIMEOUT_MS,
+			maxBytes: ATTEMPT_STREAM_USAGE_MAX_BYTES,
+		}).catch(() => null);
+		if (streamUsage) {
+			usage = streamUsage.usage;
+			firstTokenLatencyMs = streamUsage.firstTokenLatencyMs;
+			if (!usage && (streamUsage.eventsSeen ?? 0) > 0) {
+				streamMetaPartial = true;
+				streamMetaReason = streamUsage.timedOut
+					? "usage_parse_timeout"
+					: "usage_missing.stream.signal_absent";
+			}
+		}
+	}
+
+	if (usage) {
+		meta["x-usage-total-tokens"] = String(usage.totalTokens);
+		meta["x-usage-prompt-tokens"] = String(usage.promptTokens);
+		meta["x-usage-completion-tokens"] = String(usage.completionTokens);
+	}
+	if (firstTokenLatencyMs !== null && Number.isFinite(firstTokenLatencyMs)) {
+		meta[ATTEMPT_STREAM_FIRST_TOKEN_LATENCY_HEADER] = String(
+			Math.max(0, Math.floor(firstTokenLatencyMs)),
+		);
+	}
+	if (streamMetaPartial) {
+		meta[ATTEMPT_STREAM_META_PARTIAL_HEADER] = "1";
+		if (streamMetaReason) {
+			meta[ATTEMPT_STREAM_META_REASON_HEADER] = streamMetaReason;
+		}
+	}
+	return meta;
+}
+
 function parseJsonObjectBody(bodyText: string): Record<string, unknown> | null {
 	try {
 		const parsed = JSON.parse(bodyText) as unknown;
@@ -480,16 +659,23 @@ async function executeSingleAttempt(
 	}
 }
 
-function attachAttemptHeaders(
+async function attachAttemptHeaders(
 	source: AttemptExecutionResult,
 	extraHeaders?: Record<string, string>,
-): Response {
+): Promise<Response> {
 	const outHeaders = new Headers(source.response.headers);
 	outHeaders.set(ATTEMPT_RESPONSE_PATH_HEADER, source.responsePath);
 	outHeaders.set(ATTEMPT_LATENCY_HEADER, String(source.latencyMs));
 	const upstreamRequestId = normalizeRequestId(source.response.headers);
 	if (upstreamRequestId) {
 		outHeaders.set(ATTEMPT_UPSTREAM_REQUEST_ID_HEADER, upstreamRequestId);
+	}
+	const streamMetaHeaders = await collectAttemptStreamMeta(
+		source.response,
+		source.responsePath,
+	);
+	for (const [key, value] of Object.entries(streamMetaHeaders)) {
+		outHeaders.set(key, value);
 	}
 	if (extraHeaders) {
 		for (const [key, value] of Object.entries(extraHeaders)) {
