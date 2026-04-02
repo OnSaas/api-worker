@@ -45,7 +45,7 @@ const logPath = path.join(stateDir, "dev-runner.log");
 const generatedWranglerRoot = path.join(stateDir, "generated", "wrangler");
 const workerAppDir = path.join(process.cwd(), "apps/worker");
 const attemptWorkerAppDir = path.join(process.cwd(), "apps/attempt-worker");
-const nullDevicePath = process.platform === "win32" ? "NUL" : "/dev/null";
+const nullDevicePath = process.platform === "win32" ? "\\\\.\\NUL" : "/dev/null";
 
 const rawArgs = process.argv.slice(2);
 const interactiveDelegatedMode = rawArgs.includes("--_interactive-run");
