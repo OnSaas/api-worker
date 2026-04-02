@@ -1,5 +1,6 @@
 import type {
 	AdminData,
+	BackupSettings,
 	DashboardQuery,
 	SettingsForm,
 	SiteForm,
@@ -78,6 +79,23 @@ export const initialSettingsForm: SettingsForm = {
 	proxy_attempt_worker_fallback_enabled: true,
 	proxy_attempt_worker_fallback_threshold: "3",
 	proxy_large_request_offload_threshold_bytes: "32768",
+};
+
+export const initialBackupSettings: BackupSettings = {
+	enabled: false,
+	schedule_time: "04:20",
+	sync_mode: "push",
+	conflict_policy: "local_wins",
+	import_mode: "merge",
+	webdav_url: "",
+	webdav_username: "",
+	webdav_password: "",
+	webdav_path: "api-worker-backup",
+	keep_versions: 30,
+	instance_id: "",
+	last_sync_at: null,
+	last_sync_status: "idle",
+	last_sync_message: null,
 };
 
 export const initialDashboardQuery: DashboardQuery = {

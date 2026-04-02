@@ -22,7 +22,7 @@ export const ToastTitle = ({
 	<div
 		{...props}
 		class={cx(
-			"mt-1 text-sm font-semibold text-[color:var(--app-ink)]",
+			"app-toast-title mt-1 text-sm font-semibold text-[color:var(--app-ink)]",
 			className,
 		)}
 	/>

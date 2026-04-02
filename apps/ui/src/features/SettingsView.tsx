@@ -1,15 +1,43 @@
-﻿import { useMemo } from "hono/jsx/dom";
-import { Button, Card, Input, MultiSelect, Switch } from "../components/ui";
-import type { RuntimeProxyConfig, SettingsForm } from "../core/types";
+import { useEffect, useMemo, useState } from "hono/jsx/dom";
+import {
+	Button,
+	Card,
+	DropdownMenu,
+	DropdownMenuContent,
+	DropdownMenuItem,
+	Input,
+	MultiSelect,
+	Switch,
+} from "../components/ui";
+import type {
+	BackupImportMode,
+	BackupSettings,
+	RuntimeProxyConfig,
+	SettingsForm,
+} from "../core/types";
 
 type SettingsViewProps = {
 	settingsForm: SettingsForm;
 	adminPasswordSet: boolean;
 	isSaving: boolean;
+	hasPendingSettingsChanges: boolean;
 	runtimeConfig?: RuntimeProxyConfig | null;
 	retryErrorCodeOptions: string[];
+	backupSettings: BackupSettings;
+	backupImportMode: BackupImportMode;
+	backupImportFileName: string;
+	isBackupExporting: boolean;
+	isBackupImporting: boolean;
+	isBackupSyncing: boolean;
 	onSubmit: (event: Event) => void;
 	onFormChange: (patch: Partial<SettingsForm>) => void;
+	onBackupSettingsChange: (patch: Partial<BackupSettings>) => void;
+	onBackupExport: () => void;
+	onBackupImportModeChange: (mode: BackupImportMode) => void;
+	onBackupImportFileChange: (file: File | null) => void;
+	onBackupImport: () => void;
+	onBackupSyncNow: () => void;
+	onApplyRecommendedConfig: () => void;
 };
 
 const streamUsageModes = [
@@ -17,6 +45,31 @@ const streamUsageModes = [
 	{ value: "lite", label: "轻量", hint: "降低开销" },
 	{ value: "off", label: "关闭", hint: "仅记录基础" },
 ] as const;
+
+const backupSyncModeOptions: {
+	value: BackupSettings["sync_mode"];
+	label: string;
+}[] = [
+	{ value: "push", label: "单向推送（本地 → WebDAV）" },
+	{ value: "pull", label: "单向拉取（WebDAV → 本地）" },
+	{ value: "two_way", label: "双向同步" },
+];
+
+const backupImportModeOptions: {
+	value: BackupSettings["import_mode"];
+	label: string;
+}[] = [
+	{ value: "merge", label: "merge（合并）" },
+	{ value: "replace", label: "replace（覆盖）" },
+];
+
+const backupConflictPolicyOptions: {
+	value: BackupSettings["conflict_policy"];
+	label: string;
+}[] = [
+	{ value: "local_wins", label: "本地优先" },
+	{ value: "remote_wins", label: "远端优先" },
+];
 
 /**
  * Renders the settings view.
@@ -31,11 +84,28 @@ export const SettingsView = ({
 	settingsForm,
 	adminPasswordSet,
 	isSaving,
+	hasPendingSettingsChanges,
 	runtimeConfig,
 	retryErrorCodeOptions,
+	backupSettings,
+	backupImportMode,
+	backupImportFileName,
+	isBackupExporting,
+	isBackupImporting,
+	isBackupSyncing,
 	onSubmit,
 	onFormChange,
+	onBackupSettingsChange,
+	onBackupExport,
+	onBackupImportModeChange,
+	onBackupImportFileChange,
+	onBackupImport,
+	onBackupSyncNow,
+	onApplyRecommendedConfig,
 }: SettingsViewProps) => {
+	const [openBackupSelectKey, setOpenBackupSelectKey] = useState<string | null>(
+		null,
+	);
 	const attemptWorkerBoundValue =
 		runtimeConfig === null || runtimeConfig === undefined
 			? "-"
@@ -76,6 +146,47 @@ export const SettingsView = ({
 		settingsForm.channel_disable_error_codes,
 		settingsForm.proxy_retry_sleep_error_codes,
 	]);
+	const backupStatusLabel =
+		backupSettings.last_sync_status === "success"
+			? "最近同步成功"
+			: backupSettings.last_sync_status === "failed"
+				? "最近同步失败"
+				: "尚未同步";
+	const backupStatusClass =
+		backupSettings.last_sync_status === "success"
+			? "app-settings-backup-pill app-settings-backup-pill--success"
+			: backupSettings.last_sync_status === "failed"
+				? "app-settings-backup-pill app-settings-backup-pill--failed"
+				: "app-settings-backup-pill";
+	const backupSyncModeLabel =
+		backupSyncModeOptions.find(
+			(option) => option.value === backupSettings.sync_mode,
+		)?.label ?? backupSyncModeOptions[0].label;
+	const backupImportModeLabel =
+		backupImportModeOptions.find(
+			(option) => option.value === backupSettings.import_mode,
+		)?.label ?? backupImportModeOptions[0].label;
+	const backupConflictPolicyLabel =
+		backupConflictPolicyOptions.find(
+			(option) => option.value === backupSettings.conflict_policy,
+		)?.label ?? backupConflictPolicyOptions[0].label;
+	const manualImportModeLabel =
+		backupImportModeOptions.find((option) => option.value === backupImportMode)
+			?.label ?? backupImportModeOptions[0].label;
+
+	useEffect(() => {
+		const handleDocumentClick = (event: MouseEvent) => {
+			const target = event.target as Element | null;
+			if (target?.closest(".app-settings-custom-select")) {
+				return;
+			}
+			setOpenBackupSelectKey(null);
+		};
+		document.addEventListener("click", handleDocumentClick);
+		return () => {
+			document.removeEventListener("click", handleDocumentClick);
+		};
+	}, []);
 
 	return (
 		<div class="animate-fade-up space-y-4">
@@ -84,9 +195,20 @@ export const SettingsView = ({
 					<h3 class="app-title text-lg">系统设置</h3>
 					<p class="app-subtitle">管理全部运行参数</p>
 				</div>
+				<Button
+					size="sm"
+					type="button"
+					variant="ghost"
+					onClick={onApplyRecommendedConfig}
+				>
+					一键推荐配置
+				</Button>
 			</div>
 
-			<form class="app-settings-panel" onSubmit={onSubmit}>
+			<form
+				class="app-settings-panel app-settings-panel--sticky-footer"
+				onSubmit={onSubmit}
+			>
 				<Card class="app-settings-group">
 					<div class="app-settings-group__header">
 						<h4 class="app-settings-group__title">基础运行</h4>
@@ -745,11 +867,473 @@ export const SettingsView = ({
 					</div>
 				</Card>
 
-				<div class="app-settings-footer">
-					<Button variant="primary" size="lg" type="submit" disabled={isSaving}>
-						{isSaving ? "保存中..." : "保存设置"}
-					</Button>
-				</div>
+				<Card class="app-settings-group app-settings-group--allow-overflow">
+					<div class="app-settings-group__header">
+						<h4 class="app-settings-group__title">数据备份与同步</h4>
+						<p class="app-settings-group__caption">
+							全量导出（含敏感字段）与 WebDAV 同步
+						</p>
+					</div>
+					<div class="app-settings-backup-status-line">
+						<span class={backupStatusClass}>{backupStatusLabel}</span>
+						<span class="app-settings-backup-status-text">
+							{backupSettings.last_sync_at
+								? new Date(backupSettings.last_sync_at).toLocaleString(
+										"zh-CN",
+										{
+											hour12: false,
+										},
+									)
+								: "暂无同步时间"}
+						</span>
+					</div>
+					<div class="app-settings-backup-quick-actions">
+						<Button
+							variant="default"
+							size="lg"
+							type="button"
+							disabled={isBackupExporting}
+							onClick={onBackupExport}
+						>
+							{isBackupExporting ? "导出中..." : "导出全量备份"}
+						</Button>
+						<Button
+							variant="primary"
+							size="lg"
+							type="button"
+							disabled={isBackupSyncing}
+							onClick={onBackupSyncNow}
+						>
+							{isBackupSyncing ? "同步中..." : "立即同步"}
+						</Button>
+					</div>
+					<div class="app-settings-list app-settings-list--allow-overflow">
+						<div class="app-settings-row">
+							<div class="app-settings-row__main">
+								<span class="app-settings-row__label">启用定时备份</span>
+								<p class="app-settings-row__hint">每天按时间自动执行同步</p>
+							</div>
+							<div class="app-settings-row__switch">
+								<Switch
+									checked={backupSettings.enabled}
+									onToggle={(next) => {
+										onBackupSettingsChange({ enabled: next });
+									}}
+								/>
+							</div>
+						</div>
+						<div class="app-settings-row">
+							<div class="app-settings-row__main">
+								<label
+									class="app-settings-row__label"
+									for="backup-schedule-time"
+								>
+									定时备份时间（中国时间）
+								</label>
+								<p class="app-settings-row__hint">格式 HH:mm</p>
+							</div>
+							<Input
+								class="app-settings-row__control"
+								id="backup-schedule-time"
+								name="backup_schedule_time"
+								type="time"
+								disabled={!backupSettings.enabled}
+								value={backupSettings.schedule_time}
+								onInput={(event) => {
+									const target = event.currentTarget as HTMLInputElement | null;
+									onBackupSettingsChange({
+										schedule_time: target?.value ?? "",
+									});
+								}}
+							/>
+						</div>
+						<div class="app-settings-row">
+							<div class="app-settings-row__main">
+								<label class="app-settings-row__label" for="backup-sync-mode">
+									同步模式
+								</label>
+								<p class="app-settings-row__hint">可选单向/双向同步</p>
+							</div>
+							<div class="app-settings-row__control">
+								<div class="app-settings-custom-select">
+									<button
+										aria-expanded={openBackupSelectKey === "sync_mode"}
+										class="app-input app-focus app-settings-custom-select__trigger"
+										id="backup-sync-mode"
+										type="button"
+										onClick={(event) => {
+											event.stopPropagation();
+											setOpenBackupSelectKey((current) =>
+												current === "sync_mode" ? null : "sync_mode",
+											);
+										}}
+									>
+										<span class="app-settings-custom-select__value">
+											{backupSyncModeLabel}
+										</span>
+									</button>
+									<DropdownMenu open={openBackupSelectKey === "sync_mode"}>
+										<DropdownMenuContent class="app-settings-custom-select__menu">
+											{backupSyncModeOptions.map((option) => (
+												<DropdownMenuItem
+													class={`app-settings-custom-select__option ${
+														option.value === backupSettings.sync_mode
+															? "app-dropdown-item--active"
+															: ""
+													}`}
+													key={option.value}
+													onClick={() => {
+														onBackupSettingsChange({ sync_mode: option.value });
+														setOpenBackupSelectKey(null);
+													}}
+												>
+													<span>{option.label}</span>
+												</DropdownMenuItem>
+											))}
+										</DropdownMenuContent>
+									</DropdownMenu>
+								</div>
+							</div>
+						</div>
+						<div class="app-settings-row">
+							<div class="app-settings-row__main">
+								<label class="app-settings-row__label" for="backup-import-mode">
+									导入模式
+								</label>
+								<p class="app-settings-row__hint">pull/导入时应用策略</p>
+							</div>
+							<div class="app-settings-row__control">
+								<div class="app-settings-custom-select">
+									<button
+										aria-expanded={openBackupSelectKey === "import_mode"}
+										class="app-input app-focus app-settings-custom-select__trigger"
+										id="backup-import-mode"
+										type="button"
+										onClick={(event) => {
+											event.stopPropagation();
+											setOpenBackupSelectKey((current) =>
+												current === "import_mode" ? null : "import_mode",
+											);
+										}}
+									>
+										<span class="app-settings-custom-select__value">
+											{backupImportModeLabel}
+										</span>
+									</button>
+									<DropdownMenu open={openBackupSelectKey === "import_mode"}>
+										<DropdownMenuContent class="app-settings-custom-select__menu">
+											{backupImportModeOptions.map((option) => (
+												<DropdownMenuItem
+													class={`app-settings-custom-select__option ${
+														option.value === backupSettings.import_mode
+															? "app-dropdown-item--active"
+															: ""
+													}`}
+													key={option.value}
+													onClick={() => {
+														onBackupSettingsChange({
+															import_mode: option.value,
+														});
+														setOpenBackupSelectKey(null);
+													}}
+												>
+													<span>{option.label}</span>
+												</DropdownMenuItem>
+											))}
+										</DropdownMenuContent>
+									</DropdownMenu>
+								</div>
+							</div>
+						</div>
+						<div class="app-settings-row">
+							<div class="app-settings-row__main">
+								<label
+									class="app-settings-row__label"
+									for="backup-conflict-policy"
+								>
+									双向冲突策略
+								</label>
+								<p class="app-settings-row__hint">仅 two_way 模式生效</p>
+							</div>
+							<div class="app-settings-row__control">
+								<div class="app-settings-custom-select">
+									<button
+										aria-expanded={openBackupSelectKey === "conflict_policy"}
+										class="app-input app-focus app-settings-custom-select__trigger"
+										id="backup-conflict-policy"
+										type="button"
+										onClick={(event) => {
+											event.stopPropagation();
+											setOpenBackupSelectKey((current) =>
+												current === "conflict_policy"
+													? null
+													: "conflict_policy",
+											);
+										}}
+									>
+										<span class="app-settings-custom-select__value">
+											{backupConflictPolicyLabel}
+										</span>
+									</button>
+									<DropdownMenu
+										open={openBackupSelectKey === "conflict_policy"}
+									>
+										<DropdownMenuContent class="app-settings-custom-select__menu">
+											{backupConflictPolicyOptions.map((option) => (
+												<DropdownMenuItem
+													class={`app-settings-custom-select__option ${
+														option.value === backupSettings.conflict_policy
+															? "app-dropdown-item--active"
+															: ""
+													}`}
+													key={option.value}
+													onClick={() => {
+														onBackupSettingsChange({
+															conflict_policy: option.value,
+														});
+														setOpenBackupSelectKey(null);
+													}}
+												>
+													<span>{option.label}</span>
+												</DropdownMenuItem>
+											))}
+										</DropdownMenuContent>
+									</DropdownMenu>
+								</div>
+							</div>
+						</div>
+						<div class="app-settings-row app-settings-row--stack">
+							<div class="app-settings-row__main">
+								<label class="app-settings-row__label" for="backup-webdav-url">
+									WebDAV 地址
+								</label>
+								<p class="app-settings-row__hint">
+									例如 https://dav.example.com/dav/
+								</p>
+							</div>
+							<Input
+								class="app-settings-row__control app-settings-row__control--full"
+								id="backup-webdav-url"
+								name="backup_webdav_url"
+								type="url"
+								value={backupSettings.webdav_url}
+								onInput={(event) => {
+									const target = event.currentTarget as HTMLInputElement | null;
+									onBackupSettingsChange({ webdav_url: target?.value ?? "" });
+								}}
+							/>
+						</div>
+						<div class="app-settings-row">
+							<div class="app-settings-row__main">
+								<label
+									class="app-settings-row__label"
+									for="backup-webdav-username"
+								>
+									WebDAV 用户名
+								</label>
+								<p class="app-settings-row__hint">Basic Auth 用户名</p>
+							</div>
+							<Input
+								class="app-settings-row__control"
+								id="backup-webdav-username"
+								name="backup_webdav_username"
+								type="text"
+								value={backupSettings.webdav_username}
+								onInput={(event) => {
+									const target = event.currentTarget as HTMLInputElement | null;
+									onBackupSettingsChange({
+										webdav_username: target?.value ?? "",
+									});
+								}}
+							/>
+						</div>
+						<div class="app-settings-row">
+							<div class="app-settings-row__main">
+								<label
+									class="app-settings-row__label"
+									for="backup-webdav-password"
+								>
+									WebDAV 密码
+								</label>
+								<p class="app-settings-row__hint">将保存到服务端配置</p>
+							</div>
+							<Input
+								class="app-settings-row__control"
+								id="backup-webdav-password"
+								name="backup_webdav_password"
+								type="password"
+								value={backupSettings.webdav_password}
+								onInput={(event) => {
+									const target = event.currentTarget as HTMLInputElement | null;
+									onBackupSettingsChange({
+										webdav_password: target?.value ?? "",
+									});
+								}}
+							/>
+						</div>
+						<div class="app-settings-row">
+							<div class="app-settings-row__main">
+								<label class="app-settings-row__label" for="backup-webdav-path">
+									WebDAV 目录
+								</label>
+								<p class="app-settings-row__hint">
+									会写入 latest.json 与 history/
+								</p>
+							</div>
+							<Input
+								class="app-settings-row__control"
+								id="backup-webdav-path"
+								name="backup_webdav_path"
+								type="text"
+								value={backupSettings.webdav_path}
+								onInput={(event) => {
+									const target = event.currentTarget as HTMLInputElement | null;
+									onBackupSettingsChange({ webdav_path: target?.value ?? "" });
+								}}
+							/>
+						</div>
+						<div class="app-settings-row">
+							<div class="app-settings-row__main">
+								<label
+									class="app-settings-row__label"
+									for="backup-keep-versions"
+								>
+									历史保留数量
+								</label>
+								<p class="app-settings-row__hint">最多保留最近 N 份</p>
+							</div>
+							<Input
+								class="app-settings-row__control app-settings-row__control--compact"
+								id="backup-keep-versions"
+								name="backup_keep_versions"
+								type="number"
+								min="1"
+								step="1"
+								value={String(backupSettings.keep_versions)}
+								onInput={(event) => {
+									const target = event.currentTarget as HTMLInputElement | null;
+									onBackupSettingsChange({
+										keep_versions: Number(target?.value ?? "30"),
+									});
+								}}
+							/>
+						</div>
+						<div class="app-settings-row app-settings-row--stack app-settings-row--overlay">
+							<div class="app-settings-import">
+								<div class="app-settings-import__header">
+									<span class="app-settings-row__label">导入备份文件</span>
+									<p class="app-settings-row__hint">
+										导入全量数据（包含敏感字段），点击下方“导入备份”执行
+									</p>
+								</div>
+								<Input
+									class="app-settings-import__file"
+									name="backup_import_file"
+									type="file"
+									accept="application/json,.json"
+									onInput={(event) => {
+										const target =
+											event.currentTarget as HTMLInputElement | null;
+										onBackupImportFileChange(target?.files?.[0] ?? null);
+									}}
+								/>
+								<div class="app-settings-import__footer">
+									<div class="app-settings-backup-file">
+										当前文件：{backupImportFileName || "未选择"}
+									</div>
+									<div class="app-settings-import__controls">
+										<div class="app-settings-import__mode">
+											<div class="app-settings-custom-select">
+												<button
+													aria-expanded={
+														openBackupSelectKey === "manual_import_mode"
+													}
+													class="app-input app-focus app-settings-custom-select__trigger"
+													type="button"
+													onClick={(event) => {
+														event.stopPropagation();
+														setOpenBackupSelectKey((current) =>
+															current === "manual_import_mode"
+																? null
+																: "manual_import_mode",
+														);
+													}}
+												>
+													<span class="app-settings-custom-select__value">
+														{manualImportModeLabel}
+													</span>
+												</button>
+												<DropdownMenu
+													open={openBackupSelectKey === "manual_import_mode"}
+												>
+													<DropdownMenuContent class="app-settings-custom-select__menu">
+														{backupImportModeOptions.map((option) => (
+															<DropdownMenuItem
+																class={`app-settings-custom-select__option ${
+																	option.value === backupImportMode
+																		? "app-dropdown-item--active"
+																		: ""
+																}`}
+																key={option.value}
+																onClick={() => {
+																	onBackupImportModeChange(
+																		option.value as BackupImportMode,
+																	);
+																	setOpenBackupSelectKey(null);
+																}}
+															>
+																<span>{option.label}</span>
+															</DropdownMenuItem>
+														))}
+													</DropdownMenuContent>
+												</DropdownMenu>
+											</div>
+										</div>
+										<Button
+											variant="default"
+											size="lg"
+											type="button"
+											disabled={isBackupImporting}
+											onClick={onBackupImport}
+										>
+											{isBackupImporting ? "导入中..." : "导入备份"}
+										</Button>
+									</div>
+								</div>
+							</div>
+						</div>
+						<div class="app-settings-row app-settings-row--stack">
+							<div class="app-settings-row__main">
+								<span class="app-settings-row__label">最近同步结果</span>
+								<p class="app-settings-row__hint">
+									状态：{backupSettings.last_sync_status} · 时间：
+									{backupSettings.last_sync_at
+										? new Date(backupSettings.last_sync_at).toLocaleString(
+												"zh-CN",
+												{ hour12: false },
+											)
+										: "-"}
+								</p>
+								<p class="app-settings-row__hint app-settings-row__hint--preline">
+									信息：{backupSettings.last_sync_message ?? "-"}
+								</p>
+							</div>
+						</div>
+					</div>
+				</Card>
+
+				{hasPendingSettingsChanges ? (
+					<div class="app-settings-footer">
+						<Button
+							variant="primary"
+							size="lg"
+							type="submit"
+							disabled={isSaving}
+						>
+							{isSaving ? "保存中..." : "保存设置"}
+						</Button>
+					</div>
+				) : null}
 			</form>
 		</div>
 	);

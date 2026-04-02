@@ -11,7 +11,10 @@ import {
 import { runCheckinAll } from "./checkin-runner";
 import { recoverDisabledChannels } from "./channel-recovery";
 import { invalidateSelectionHotCache } from "./hot-kv";
+import { executeBackupSync } from "./backup-sync";
 import {
+	getBackupScheduleEnabled,
+	getBackupScheduleTime,
 	getChannelRecoveryProbeEnabled,
 	getChannelRecoveryProbeScheduleTime,
 	getCheckinScheduleTime,
@@ -20,6 +23,7 @@ import {
 const SCHEDULER_NAME = "checkin-scheduler";
 const LAST_RUN_DATE_KEY = "last_run_date";
 const CHANNEL_RECOVERY_LAST_RUN_DATE_KEY = "channel_recovery_last_run_date";
+const BACKUP_LAST_RUN_DATE_KEY = "backup_last_run_date";
 const INTERNAL_IMMEDIATE_RESCHEDULE_DELAY_MS = 1000;
 
 export const getCheckinSchedulerStub = (namespace: DurableObjectNamespace) =>
@@ -62,6 +66,7 @@ type RescheduleResult = {
 	nextRunAt: string | null;
 	checkinNextRunAt: string | null;
 	channelRecoveryNextRunAt: string | null;
+	backupNextRunAt: string | null;
 };
 
 export class CheckinScheduler {
@@ -95,12 +100,16 @@ export class CheckinScheduler {
 				(await this.state.storage.get<string>(
 					CHANNEL_RECOVERY_LAST_RUN_DATE_KEY,
 				)) ?? null;
+			const backupLastRunDate =
+				(await this.state.storage.get<string>(BACKUP_LAST_RUN_DATE_KEY)) ??
+				null;
 			return new Response(
 				JSON.stringify({
 					ok: true,
 					last_run_date: lastRunDate,
 					checkin_last_run_date: lastRunDate,
 					channel_recovery_last_run_date: channelRecoveryLastRunDate,
+					backup_last_run_date: backupLastRunDate,
 				}),
 				{ headers: { "Content-Type": "application/json" } },
 			);
@@ -148,6 +157,25 @@ export class CheckinScheduler {
 				);
 			}
 		}
+		const backupEnabled = await getBackupScheduleEnabled(this.env.DB);
+		if (backupEnabled) {
+			const backupScheduleTime = await getBackupScheduleTime(this.env.DB);
+			const backupLastRunDate =
+				(await this.state.storage.get<string>(BACKUP_LAST_RUN_DATE_KEY)) ??
+				null;
+			if (shouldRunCheckin(now, backupScheduleTime, backupLastRunDate)) {
+				try {
+					await executeBackupSync(this.env.DB, { reason: "schedule" });
+				} catch {
+					// Swallow scheduler backup failures to keep alarm loop alive.
+				} finally {
+					await this.state.storage.put(
+						BACKUP_LAST_RUN_DATE_KEY,
+						beijingDateString(now),
+					);
+				}
+			}
+		}
 		await this.reschedule(now);
 	}
 
@@ -161,9 +189,12 @@ export class CheckinScheduler {
 		);
 		const channelRecoveryScheduleTime =
 			await getChannelRecoveryProbeScheduleTime(this.env.DB);
+		const backupEnabled = await getBackupScheduleEnabled(this.env.DB);
+		const backupScheduleTime = await getBackupScheduleTime(this.env.DB);
 		if (reset) {
 			await this.state.storage.delete(LAST_RUN_DATE_KEY);
 			await this.state.storage.delete(CHANNEL_RECOVERY_LAST_RUN_DATE_KEY);
+			await this.state.storage.delete(BACKUP_LAST_RUN_DATE_KEY);
 		}
 		const checkinNextRunAt = computeNextAlarmAt(
 			now,
@@ -173,11 +204,20 @@ export class CheckinScheduler {
 		const channelRecoveryNextRunAt = channelRecoveryEnabled
 			? computeNextAlarmAt(now, channelRecoveryScheduleTime, reset)
 			: null;
-		const nextRun = channelRecoveryNextRunAt
-			? checkinNextRunAt.getTime() <= channelRecoveryNextRunAt.getTime()
-				? checkinNextRunAt
-				: channelRecoveryNextRunAt
-			: checkinNextRunAt;
+		const backupNextRunAt = backupEnabled
+			? computeNextAlarmAt(now, backupScheduleTime, reset)
+			: null;
+		const nextCandidates = [
+			checkinNextRunAt,
+			channelRecoveryNextRunAt,
+			backupNextRunAt,
+		].filter((item): item is Date => Boolean(item));
+		let nextRun = checkinNextRunAt;
+		for (const candidate of nextCandidates) {
+			if (candidate.getTime() < nextRun.getTime()) {
+				nextRun = candidate;
+			}
+		}
 		await this.state.storage.setAlarm(nextRun.getTime());
 		return {
 			nextRunAt: nextRun.toISOString(),
@@ -185,6 +225,7 @@ export class CheckinScheduler {
 			channelRecoveryNextRunAt: channelRecoveryNextRunAt
 				? channelRecoveryNextRunAt.toISOString()
 				: null,
+			backupNextRunAt: backupNextRunAt ? backupNextRunAt.toISOString() : null,
 		};
 	}
 }

@@ -18,6 +18,7 @@ import {
 } from "./components/ui";
 import { createApiFetch } from "./core/api";
 import {
+	initialBackupSettings,
 	initialDashboardQuery,
 	initialData,
 	initialSettingsForm,
@@ -35,6 +36,10 @@ import {
 } from "./core/sites";
 import type {
 	AdminData,
+	BackupImportMode,
+	BackupImportResult,
+	BackupSettings,
+	BackupSyncResult,
 	CheckinSummary,
 	DashboardData,
 	DashboardQuery,
@@ -125,8 +130,37 @@ type SiteTestAllReport = {
 	runsAt: string;
 };
 
+type EditableBackupSettings = Pick<
+	BackupSettings,
+	| "enabled"
+	| "schedule_time"
+	| "sync_mode"
+	| "conflict_policy"
+	| "import_mode"
+	| "webdav_url"
+	| "webdav_username"
+	| "webdav_password"
+	| "webdav_path"
+	| "keep_versions"
+>;
+
 const buildActionKey = (scope: string, id?: string) =>
 	id ? `${scope}:${id}` : scope;
+
+const pickEditableBackupSettings = (
+	settings: BackupSettings,
+): EditableBackupSettings => ({
+	enabled: settings.enabled,
+	schedule_time: settings.schedule_time,
+	sync_mode: settings.sync_mode,
+	conflict_policy: settings.conflict_policy,
+	import_mode: settings.import_mode,
+	webdav_url: settings.webdav_url,
+	webdav_username: settings.webdav_username,
+	webdav_password: settings.webdav_password,
+	webdav_path: settings.webdav_path,
+	keep_versions: settings.keep_versions,
+});
 
 const initialUsageQuery: UsageQuery = {
 	channel_ids: [],
@@ -136,6 +170,21 @@ const initialUsageQuery: UsageQuery = {
 	from: "",
 	to: "",
 };
+
+const buildRecommendedSettingsForm = (
+	currentAdminPassword: string,
+): SettingsForm => ({
+	...initialSettingsForm,
+	admin_password: currentAdminPassword,
+	channel_disable_error_codes: [
+		...initialSettingsForm.channel_disable_error_codes,
+	],
+	proxy_retry_sleep_error_codes: [
+		...initialSettingsForm.proxy_retry_sleep_error_codes,
+	],
+	proxy_retry_max_retries: "3",
+	channel_recovery_probe_enabled: true,
+});
 
 const dashboardPresetDays: Record<DashboardQuery["preset"], number> = {
 	all: 0,
@@ -284,6 +333,18 @@ const App = () => {
 	});
 	const [settingsForm, setSettingsForm] =
 		useState<SettingsForm>(initialSettingsForm);
+	const [settingsFormSnapshot, setSettingsFormSnapshot] =
+		useState<SettingsForm>(initialSettingsForm);
+	const [backupSettings, setBackupSettings] = useState<BackupSettings>(
+		initialBackupSettings,
+	);
+	const [backupSettingsSnapshot, setBackupSettingsSnapshot] =
+		useState<EditableBackupSettings>(() =>
+			pickEditableBackupSettings(initialBackupSettings),
+		);
+	const [backupImportMode, setBackupImportMode] =
+		useState<BackupImportMode>("merge");
+	const [backupImportFile, setBackupImportFile] = useState<File | null>(null);
 	const [retryErrorCodeOptions, setRetryErrorCodeOptions] = useState<string[]>(
 		[],
 	);
@@ -623,6 +684,12 @@ const App = () => {
 		setRetryErrorCodeOptions(codes);
 	}, [apiFetch]);
 
+	const loadBackupSettings = useCallback(async () => {
+		const settings = await apiFetch<BackupSettings>("/api/backup/sync-config");
+		setBackupSettings(settings);
+		setBackupSettingsSnapshot(pickEditableBackupSettings(settings));
+	}, [apiFetch]);
+
 	const loadTab = useCallback(
 		async (tabId: TabId) => {
 			setLoading(true);
@@ -649,7 +716,11 @@ const App = () => {
 					]);
 				}
 				if (tabId === "settings") {
-					await Promise.all([loadSettings(), loadRetryErrorCodes()]);
+					await Promise.all([
+						loadSettings(),
+						loadRetryErrorCodes(),
+						loadBackupSettings(),
+					]);
 				}
 			} catch (error) {
 				pushNotice("error", (error as Error).message);
@@ -662,6 +733,7 @@ const App = () => {
 			loadDashboard,
 			loadModels,
 			loadRetryErrorCodes,
+			loadBackupSettings,
 			loadSettings,
 			loadSites,
 			loadTokens,
@@ -693,7 +765,7 @@ const App = () => {
 		}
 		const runtimeSettings =
 			data.settings.runtime_settings ?? data.settings.runtime_config;
-		setSettingsForm({
+		const nextSettingsForm: SettingsForm = {
 			log_retention_days: String(data.settings.log_retention_days ?? 30),
 			session_ttl_hours: String(data.settings.session_ttl_hours ?? 12),
 			admin_password: "",
@@ -754,7 +826,9 @@ const App = () => {
 			proxy_large_request_offload_threshold_bytes: String(
 				runtimeSettings?.large_request_offload_threshold_bytes ?? 32768,
 			),
-		});
+		};
+		setSettingsForm(nextSettingsForm);
+		setSettingsFormSnapshot(nextSettingsForm);
 	}, [data.settings]);
 
 	const handleLogin = useCallback(
@@ -820,6 +894,38 @@ const App = () => {
 		},
 		[],
 	);
+
+	const handleBackupSettingsChange = useCallback(
+		(patch: Partial<BackupSettings>) => {
+			setBackupSettings((prev) => ({ ...prev, ...patch }));
+		},
+		[],
+	);
+
+	const handleBackupImportModeChange = useCallback((mode: BackupImportMode) => {
+		setBackupImportMode(mode);
+	}, []);
+
+	const handleBackupImportFileChange = useCallback((file: File | null) => {
+		setBackupImportFile(file);
+	}, []);
+
+	const handleApplyRecommendedConfig = useCallback(() => {
+		setSettingsForm((prev) =>
+			buildRecommendedSettingsForm(prev.admin_password),
+		);
+		setBackupSettings((prev) => ({
+			...prev,
+			enabled: true,
+			schedule_time: "04:20",
+			sync_mode: "push",
+			conflict_policy: "local_wins",
+			import_mode: "merge",
+			keep_versions: 30,
+			webdav_path: prev.webdav_path.trim() || "api-worker-backup",
+		}));
+		pushNotice("info", "已应用推荐配置，请点击保存设置生效。");
+	}, [pushNotice]);
 
 	const handleTokenFormChange = useCallback((patch: Partial<TokenForm>) => {
 		setTokenForm((prev) => ({ ...prev, ...patch }));
@@ -1571,6 +1677,20 @@ const App = () => {
 				pushNotice("warning", "禁用渠道抽测时间需为 HH:mm");
 				return;
 			}
+			const backupScheduleTime = backupSettings.schedule_time.trim();
+			if (!/^\d{2}:\d{2}$/.test(backupScheduleTime)) {
+				pushNotice("warning", "定时备份时间需为 HH:mm");
+				return;
+			}
+			const backupKeepVersions = Number(backupSettings.keep_versions);
+			if (
+				Number.isNaN(backupKeepVersions) ||
+				backupKeepVersions < 1 ||
+				!Number.isInteger(backupKeepVersions)
+			) {
+				pushNotice("warning", "备份历史保留数量需为正整数");
+				return;
+			}
 			startAction(actionKey);
 			const payload: Record<string, unknown> = {
 				log_retention_days: retention,
@@ -1608,11 +1728,32 @@ const App = () => {
 				payload.admin_password = password;
 			}
 			try {
-				await apiFetch("/api/settings", {
-					method: "PUT",
-					body: JSON.stringify(payload),
-				});
-				await Promise.all([loadSettings(), loadRetryErrorCodes()]);
+				await Promise.all([
+					apiFetch("/api/settings", {
+						method: "PUT",
+						body: JSON.stringify(payload),
+					}),
+					apiFetch("/api/backup/sync-config", {
+						method: "PUT",
+						body: JSON.stringify({
+							enabled: backupSettings.enabled,
+							schedule_time: backupScheduleTime,
+							sync_mode: backupSettings.sync_mode,
+							conflict_policy: backupSettings.conflict_policy,
+							import_mode: backupSettings.import_mode,
+							webdav_url: backupSettings.webdav_url.trim(),
+							webdav_username: backupSettings.webdav_username.trim(),
+							webdav_password: backupSettings.webdav_password.trim(),
+							webdav_path: backupSettings.webdav_path.trim(),
+							keep_versions: backupKeepVersions,
+						}),
+					}),
+				]);
+				await Promise.all([
+					loadSettings(),
+					loadRetryErrorCodes(),
+					loadBackupSettings(),
+				]);
 				setSettingsForm((prev) => ({ ...prev, admin_password: "" }));
 				pushNotice("success", "设置已更新");
 			} catch (error) {
@@ -1623,8 +1764,10 @@ const App = () => {
 		},
 		[
 			apiFetch,
+			backupSettings,
 			endAction,
 			isActionPending,
+			loadBackupSettings,
 			loadRetryErrorCodes,
 			loadSettings,
 			pushNotice,
@@ -1632,6 +1775,134 @@ const App = () => {
 			startAction,
 		],
 	);
+
+	const handleBackupExport = useCallback(async () => {
+		const actionKey = buildActionKey("backup:export");
+		if (isActionPending(actionKey)) {
+			return;
+		}
+		startAction(actionKey);
+		try {
+			const payload = await apiFetch<unknown>("/api/backup/export");
+			const exportedAt = new Date()
+				.toISOString()
+				.replace(/[-:]/g, "")
+				.replace(/\..*$/, "")
+				.replace("T", "-");
+			const blob = new Blob([JSON.stringify(payload, null, 2)], {
+				type: "application/json;charset=utf-8",
+			});
+			const url = URL.createObjectURL(blob);
+			const anchor = document.createElement("a");
+			anchor.href = url;
+			anchor.download = `api-worker-backup-${exportedAt}.json`;
+			document.body.appendChild(anchor);
+			anchor.click();
+			anchor.remove();
+			URL.revokeObjectURL(url);
+			pushNotice("success", "备份已导出");
+		} catch (error) {
+			pushNotice("error", (error as Error).message);
+		} finally {
+			endAction(actionKey);
+		}
+	}, [apiFetch, endAction, isActionPending, pushNotice, startAction]);
+
+	const handleBackupImport = useCallback(async () => {
+		const actionKey = buildActionKey("backup:import");
+		if (isActionPending(actionKey)) {
+			return;
+		}
+		if (!backupImportFile) {
+			pushNotice("warning", "请先选择备份文件");
+			return;
+		}
+		startAction(actionKey);
+		try {
+			const text = await backupImportFile.text();
+			const payload = JSON.parse(text) as unknown;
+			const result = await apiFetch<BackupImportResult>("/api/backup/import", {
+				method: "POST",
+				body: JSON.stringify({
+					payload,
+					mode: backupImportMode,
+					dry_run: false,
+				}),
+			});
+			await Promise.all([
+				loadSites(),
+				loadTokens(),
+				loadSettings(),
+				loadBackupSettings(),
+				loadRetryErrorCodes(),
+			]);
+			setBackupImportFile(null);
+			pushNotice(
+				"success",
+				`导入完成：站点 +${result.summary.sites.created}/${result.summary.sites.updated}，令牌 +${result.summary.tokens.created}/${result.summary.tokens.updated}`,
+			);
+		} catch (error) {
+			pushNotice("error", (error as Error).message);
+		} finally {
+			endAction(actionKey);
+		}
+	}, [
+		apiFetch,
+		backupImportFile,
+		backupImportMode,
+		endAction,
+		isActionPending,
+		loadBackupSettings,
+		loadRetryErrorCodes,
+		loadSettings,
+		loadSites,
+		loadTokens,
+		pushNotice,
+		startAction,
+	]);
+
+	const handleBackupSyncNow = useCallback(async () => {
+		const actionKey = buildActionKey("backup:sync");
+		if (isActionPending(actionKey)) {
+			return;
+		}
+		startAction(actionKey);
+		try {
+			const result = await apiFetch<BackupSyncResult>("/api/backup/sync-now", {
+				method: "POST",
+				body: JSON.stringify({ mode: backupSettings.sync_mode }),
+			});
+			await loadBackupSettings();
+			if (result.action === "pull") {
+				await Promise.all([
+					loadSites(),
+					loadTokens(),
+					loadSettings(),
+					loadRetryErrorCodes(),
+				]);
+			}
+			pushNotice(
+				"success",
+				`同步完成：模式 ${result.mode}，动作 ${result.action}`,
+			);
+		} catch (error) {
+			pushNotice("error", (error as Error).message);
+		} finally {
+			endAction(actionKey);
+		}
+	}, [
+		apiFetch,
+		backupSettings.sync_mode,
+		endAction,
+		isActionPending,
+		loadBackupSettings,
+		loadRetryErrorCodes,
+		loadSettings,
+		loadSites,
+		loadTokens,
+		pushNotice,
+		startAction,
+	]);
 
 	const handleSiteDelete = useCallback(
 		async (id: string) => {
@@ -2056,6 +2327,19 @@ const App = () => {
 		() => tabs.find((tab) => tab.id === activeTab)?.label ?? "管理台",
 		[activeTab],
 	);
+	const hasPendingSettingsChanges = useMemo(() => {
+		const settingsChanged =
+			JSON.stringify(settingsForm) !== JSON.stringify(settingsFormSnapshot);
+		const backupChanged =
+			JSON.stringify(pickEditableBackupSettings(backupSettings)) !==
+			JSON.stringify(backupSettingsSnapshot);
+		return settingsChanged || backupChanged;
+	}, [
+		backupSettings,
+		backupSettingsSnapshot,
+		settingsForm,
+		settingsFormSnapshot,
+	]);
 	const loginNotice = notices[notices.length - 1] ?? null;
 
 	const renderContent = () => {
@@ -2189,8 +2473,22 @@ const App = () => {
 					runtimeConfig={data.settings?.runtime_config ?? null}
 					retryErrorCodeOptions={retryErrorCodeOptions}
 					isSaving={isActionPending(buildActionKey("settings:submit"))}
+					hasPendingSettingsChanges={hasPendingSettingsChanges}
+					backupSettings={backupSettings}
+					backupImportMode={backupImportMode}
+					backupImportFileName={backupImportFile?.name ?? ""}
+					isBackupExporting={isActionPending(buildActionKey("backup:export"))}
+					isBackupImporting={isActionPending(buildActionKey("backup:import"))}
+					isBackupSyncing={isActionPending(buildActionKey("backup:sync"))}
 					onSubmit={handleSettingsSubmit}
 					onFormChange={handleSettingsFormChange}
+					onBackupSettingsChange={handleBackupSettingsChange}
+					onBackupExport={handleBackupExport}
+					onBackupImportModeChange={handleBackupImportModeChange}
+					onBackupImportFileChange={handleBackupImportFileChange}
+					onBackupImport={handleBackupImport}
+					onBackupSyncNow={handleBackupSyncNow}
+					onApplyRecommendedConfig={handleApplyRecommendedConfig}
 				/>
 			);
 		}

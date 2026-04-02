@@ -35,8 +35,19 @@ const DEFAULT_PROXY_ATTEMPT_WORKER_FALLBACK_THRESHOLD = 3;
 const DEFAULT_PROXY_LARGE_REQUEST_OFFLOAD_THRESHOLD_BYTES = 32768;
 const DEFAULT_ATTEMPT_LOG_ENABLED = true;
 const DEFAULT_ATTEMPT_LOG_RETENTION_DAYS = 30;
+const DEFAULT_BACKUP_ENABLED = false;
+const DEFAULT_BACKUP_SCHEDULE_TIME = "04:20";
+const DEFAULT_BACKUP_SYNC_MODE = "push";
+const DEFAULT_BACKUP_CONFLICT_POLICY = "local_wins";
+const DEFAULT_BACKUP_IMPORT_MODE = "merge";
+const DEFAULT_BACKUP_WEBDAV_URL = "";
+const DEFAULT_BACKUP_WEBDAV_USERNAME = "";
+const DEFAULT_BACKUP_WEBDAV_PASSWORD = "";
+const DEFAULT_BACKUP_WEBDAV_PATH = "api-worker-backup";
+const DEFAULT_BACKUP_KEEP_VERSIONS = 30;
 const SETTING_SNAPSHOT_TTL_MS = 1000;
 const RUNTIME_SETTING_SNAPSHOT_TTL_MS = 5000;
+const BACKUP_SETTING_SNAPSHOT_TTL_MS = 5000;
 
 const RETENTION_KEY = "log_retention_days";
 const SESSION_TTL_KEY = "session_ttl_hours";
@@ -72,6 +83,20 @@ const PROXY_LARGE_REQUEST_OFFLOAD_THRESHOLD_BYTES_KEY =
 	"proxy_large_request_offload_threshold_bytes";
 const ATTEMPT_LOG_ENABLED_KEY = "attempt_log_enabled";
 const ATTEMPT_LOG_RETENTION_DAYS_KEY = "attempt_log_retention_days";
+const BACKUP_ENABLED_KEY = "backup_enabled";
+const BACKUP_SCHEDULE_TIME_KEY = "backup_schedule_time";
+const BACKUP_SYNC_MODE_KEY = "backup_sync_mode";
+const BACKUP_CONFLICT_POLICY_KEY = "backup_conflict_policy";
+const BACKUP_IMPORT_MODE_KEY = "backup_import_mode";
+const BACKUP_WEBDAV_URL_KEY = "backup_webdav_url";
+const BACKUP_WEBDAV_USERNAME_KEY = "backup_webdav_username";
+const BACKUP_WEBDAV_PASSWORD_KEY = "backup_webdav_password";
+const BACKUP_WEBDAV_PATH_KEY = "backup_webdav_path";
+const BACKUP_KEEP_VERSIONS_KEY = "backup_keep_versions";
+const BACKUP_INSTANCE_ID_KEY = "backup_instance_id";
+const BACKUP_LAST_SYNC_AT_KEY = "backup_last_sync_at";
+const BACKUP_LAST_SYNC_STATUS_KEY = "backup_last_sync_status";
+const BACKUP_LAST_SYNC_MESSAGE_KEY = "backup_last_sync_message";
 
 const RUNTIME_SETTING_KEYS = [
 	PROXY_UPSTREAM_TIMEOUT_KEY,
@@ -94,6 +119,23 @@ const RUNTIME_SETTING_KEYS = [
 	PROXY_LARGE_REQUEST_OFFLOAD_THRESHOLD_BYTES_KEY,
 	ATTEMPT_LOG_ENABLED_KEY,
 	ATTEMPT_LOG_RETENTION_DAYS_KEY,
+] as const;
+
+const BACKUP_SETTING_KEYS = [
+	BACKUP_ENABLED_KEY,
+	BACKUP_SCHEDULE_TIME_KEY,
+	BACKUP_SYNC_MODE_KEY,
+	BACKUP_CONFLICT_POLICY_KEY,
+	BACKUP_IMPORT_MODE_KEY,
+	BACKUP_WEBDAV_URL_KEY,
+	BACKUP_WEBDAV_USERNAME_KEY,
+	BACKUP_WEBDAV_PASSWORD_KEY,
+	BACKUP_WEBDAV_PATH_KEY,
+	BACKUP_KEEP_VERSIONS_KEY,
+	BACKUP_INSTANCE_ID_KEY,
+	BACKUP_LAST_SYNC_AT_KEY,
+	BACKUP_LAST_SYNC_STATUS_KEY,
+	BACKUP_LAST_SYNC_MESSAGE_KEY,
 ] as const;
 
 export type RuntimeProxyConfig = {
@@ -141,6 +183,29 @@ export type ProxyRuntimeSettings = {
 	attempt_log_retention_days: number;
 };
 
+export type BackupSyncMode = "push" | "pull" | "two_way";
+
+export type BackupConflictPolicy = "local_wins" | "remote_wins";
+
+export type BackupImportMode = "merge" | "replace";
+
+export type BackupSettings = {
+	enabled: boolean;
+	schedule_time: string;
+	sync_mode: BackupSyncMode;
+	conflict_policy: BackupConflictPolicy;
+	import_mode: BackupImportMode;
+	webdav_url: string;
+	webdav_username: string;
+	webdav_password: string;
+	webdav_path: string;
+	keep_versions: number;
+	instance_id: string;
+	last_sync_at: string | null;
+	last_sync_status: "success" | "failed" | "idle";
+	last_sync_message: string | null;
+};
+
 type SettingSnapshot<T> = {
 	value: T;
 	expiresAt: number;
@@ -155,6 +220,7 @@ let channelRecoveryProbeScheduleSnapshot: SettingSnapshot<string> | null = null;
 let modelCooldownSnapshot: SettingSnapshot<number> | null = null;
 let runtimeSettingsSnapshot: SettingSnapshot<ProxyRuntimeSettings> | null =
 	null;
+let backupSettingsSnapshot: SettingSnapshot<BackupSettings> | null = null;
 
 async function readSetting(
 	db: D1Database,
@@ -270,12 +336,48 @@ function clearRuntimeSnapshots(): void {
 	modelCooldownSnapshot = null;
 }
 
+function clearBackupSnapshots(): void {
+	backupSettingsSnapshot = null;
+}
+
 function normalizeStreamUsageMode(value: string | undefined): string {
 	const normalized = (value ?? "").toLowerCase();
 	if (normalized === "off" || normalized === "full" || normalized === "lite") {
 		return normalized;
 	}
 	return DEFAULT_PROXY_STREAM_USAGE_MODE;
+}
+
+function normalizeBackupSyncMode(value: string | undefined): BackupSyncMode {
+	const normalized = (value ?? "").trim().toLowerCase();
+	if (
+		normalized === "push" ||
+		normalized === "pull" ||
+		normalized === "two_way"
+	) {
+		return normalized;
+	}
+	return DEFAULT_BACKUP_SYNC_MODE;
+}
+
+function normalizeBackupConflictPolicy(
+	value: string | undefined,
+): BackupConflictPolicy {
+	const normalized = (value ?? "").trim().toLowerCase();
+	if (normalized === "local_wins" || normalized === "remote_wins") {
+		return normalized;
+	}
+	return DEFAULT_BACKUP_CONFLICT_POLICY;
+}
+
+function normalizeBackupImportMode(
+	value: string | undefined,
+): BackupImportMode {
+	const normalized = (value ?? "").trim().toLowerCase();
+	if (normalized === "merge" || normalized === "replace") {
+		return normalized;
+	}
+	return DEFAULT_BACKUP_IMPORT_MODE;
 }
 
 export function normalizeErrorCodeList(input: unknown): string[] | null {
@@ -833,6 +935,202 @@ export async function setModelFailureCooldownMinutes(
 	clearRuntimeSnapshots();
 }
 
+export async function getBackupSettings(
+	db: D1Database,
+): Promise<BackupSettings> {
+	const snapshot = backupSettingsSnapshot;
+	if (snapshot && snapshot.expiresAt > Date.now()) {
+		return snapshot.value;
+	}
+	const settings = await readSettingsByKeys(db, BACKUP_SETTING_KEYS);
+	let instanceId = (settings[BACKUP_INSTANCE_ID_KEY] ?? "").trim();
+	if (!instanceId) {
+		instanceId = crypto.randomUUID();
+		await upsertSetting(db, BACKUP_INSTANCE_ID_KEY, instanceId);
+	}
+	const scheduleTimeRaw =
+		(settings[BACKUP_SCHEDULE_TIME_KEY] ?? "").trim() ||
+		DEFAULT_BACKUP_SCHEDULE_TIME;
+	const scheduleTime = parseScheduleTime(scheduleTimeRaw)
+		? scheduleTimeRaw
+		: DEFAULT_BACKUP_SCHEDULE_TIME;
+	const normalizedPath =
+		(settings[BACKUP_WEBDAV_PATH_KEY] ?? "").trim() ||
+		DEFAULT_BACKUP_WEBDAV_PATH;
+	const value: BackupSettings = {
+		enabled: parseBooleanSetting(
+			settings[BACKUP_ENABLED_KEY] ?? null,
+			DEFAULT_BACKUP_ENABLED,
+		),
+		schedule_time: scheduleTime,
+		sync_mode: normalizeBackupSyncMode(settings[BACKUP_SYNC_MODE_KEY]),
+		conflict_policy: normalizeBackupConflictPolicy(
+			settings[BACKUP_CONFLICT_POLICY_KEY],
+		),
+		import_mode: normalizeBackupImportMode(settings[BACKUP_IMPORT_MODE_KEY]),
+		webdav_url:
+			(settings[BACKUP_WEBDAV_URL_KEY] ?? "").trim() ||
+			DEFAULT_BACKUP_WEBDAV_URL,
+		webdav_username:
+			(settings[BACKUP_WEBDAV_USERNAME_KEY] ?? "").trim() ||
+			DEFAULT_BACKUP_WEBDAV_USERNAME,
+		webdav_password:
+			(settings[BACKUP_WEBDAV_PASSWORD_KEY] ?? "").trim() ||
+			DEFAULT_BACKUP_WEBDAV_PASSWORD,
+		webdav_path: normalizedPath,
+		keep_versions: parsePositiveSetting(
+			settings[BACKUP_KEEP_VERSIONS_KEY] ?? null,
+			DEFAULT_BACKUP_KEEP_VERSIONS,
+		),
+		instance_id: instanceId,
+		last_sync_at: (settings[BACKUP_LAST_SYNC_AT_KEY] ?? "").trim() || null,
+		last_sync_status:
+			(settings[BACKUP_LAST_SYNC_STATUS_KEY] ?? "").trim() === "success" ||
+			(settings[BACKUP_LAST_SYNC_STATUS_KEY] ?? "").trim() === "failed"
+				? ((settings[BACKUP_LAST_SYNC_STATUS_KEY] ?? "").trim() as
+						| "success"
+						| "failed")
+				: "idle",
+		last_sync_message:
+			(settings[BACKUP_LAST_SYNC_MESSAGE_KEY] ?? "").trim() || null,
+	};
+	backupSettingsSnapshot = {
+		value,
+		expiresAt: Date.now() + BACKUP_SETTING_SNAPSHOT_TTL_MS,
+	};
+	return value;
+}
+
+export async function getBackupScheduleEnabled(
+	db: D1Database,
+): Promise<boolean> {
+	const settings = await getBackupSettings(db);
+	return settings.enabled;
+}
+
+export async function getBackupScheduleTime(db: D1Database): Promise<string> {
+	const settings = await getBackupSettings(db);
+	return settings.schedule_time;
+}
+
+export async function setBackupSettings(
+	db: D1Database,
+	update: Partial<BackupSettings>,
+): Promise<void> {
+	const tasks: Promise<void>[] = [];
+	if (update.enabled !== undefined) {
+		tasks.push(
+			upsertSetting(db, BACKUP_ENABLED_KEY, update.enabled ? "1" : "0"),
+		);
+	}
+	if (update.schedule_time !== undefined) {
+		const scheduleTime = parseScheduleTime(update.schedule_time)
+			? update.schedule_time
+			: DEFAULT_BACKUP_SCHEDULE_TIME;
+		tasks.push(upsertSetting(db, BACKUP_SCHEDULE_TIME_KEY, scheduleTime));
+	}
+	if (update.sync_mode !== undefined) {
+		tasks.push(
+			upsertSetting(
+				db,
+				BACKUP_SYNC_MODE_KEY,
+				normalizeBackupSyncMode(update.sync_mode),
+			),
+		);
+	}
+	if (update.conflict_policy !== undefined) {
+		tasks.push(
+			upsertSetting(
+				db,
+				BACKUP_CONFLICT_POLICY_KEY,
+				normalizeBackupConflictPolicy(update.conflict_policy),
+			),
+		);
+	}
+	if (update.import_mode !== undefined) {
+		tasks.push(
+			upsertSetting(
+				db,
+				BACKUP_IMPORT_MODE_KEY,
+				normalizeBackupImportMode(update.import_mode),
+			),
+		);
+	}
+	if (update.webdav_url !== undefined) {
+		tasks.push(
+			upsertSetting(db, BACKUP_WEBDAV_URL_KEY, update.webdav_url.trim()),
+		);
+	}
+	if (update.webdav_username !== undefined) {
+		tasks.push(
+			upsertSetting(
+				db,
+				BACKUP_WEBDAV_USERNAME_KEY,
+				update.webdav_username.trim(),
+			),
+		);
+	}
+	if (update.webdav_password !== undefined) {
+		tasks.push(
+			upsertSetting(
+				db,
+				BACKUP_WEBDAV_PASSWORD_KEY,
+				update.webdav_password.trim(),
+			),
+		);
+	}
+	if (update.webdav_path !== undefined) {
+		const normalized = update.webdav_path.trim() || DEFAULT_BACKUP_WEBDAV_PATH;
+		tasks.push(upsertSetting(db, BACKUP_WEBDAV_PATH_KEY, normalized));
+	}
+	if (update.keep_versions !== undefined) {
+		tasks.push(
+			upsertSetting(
+				db,
+				BACKUP_KEEP_VERSIONS_KEY,
+				String(Math.max(1, Math.floor(update.keep_versions))),
+			),
+		);
+	}
+	if (update.instance_id !== undefined) {
+		tasks.push(
+			upsertSetting(
+				db,
+				BACKUP_INSTANCE_ID_KEY,
+				update.instance_id.trim() || crypto.randomUUID(),
+			),
+		);
+	}
+	if (update.last_sync_at !== undefined) {
+		tasks.push(
+			upsertSetting(db, BACKUP_LAST_SYNC_AT_KEY, update.last_sync_at ?? ""),
+		);
+	}
+	if (update.last_sync_status !== undefined) {
+		const status =
+			update.last_sync_status === "success" ||
+			update.last_sync_status === "failed" ||
+			update.last_sync_status === "idle"
+				? update.last_sync_status
+				: "idle";
+		tasks.push(upsertSetting(db, BACKUP_LAST_SYNC_STATUS_KEY, status));
+	}
+	if (update.last_sync_message !== undefined) {
+		tasks.push(
+			upsertSetting(
+				db,
+				BACKUP_LAST_SYNC_MESSAGE_KEY,
+				update.last_sync_message ?? "",
+			),
+		);
+	}
+	if (tasks.length === 0) {
+		return;
+	}
+	await Promise.all(tasks);
+	clearBackupSnapshots();
+}
+
 /**
  * Resets in-memory setting snapshots (testing utility).
  */
@@ -845,4 +1143,5 @@ export function resetSettingsSnapshots(): void {
 	channelRecoveryProbeScheduleSnapshot = null;
 	modelCooldownSnapshot = null;
 	runtimeSettingsSnapshot = null;
+	backupSettingsSnapshot = null;
 }

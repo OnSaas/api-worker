@@ -768,6 +768,11 @@ body {
 	pointer-events: auto;
 }
 
+.app-toast-title {
+	white-space: pre-line;
+	line-height: 1.45;
+}
+
 .app-toast-progress {
 	position: absolute;
 	left: 0;
@@ -1104,6 +1109,10 @@ body {
 	gap: 16px;
 }
 
+.app-settings-panel--sticky-footer {
+	padding-bottom: 12px;
+}
+
 .app-settings-group {
 	padding: 0;
 	overflow: hidden;
@@ -1134,6 +1143,53 @@ body {
 	letter-spacing: 0.1em;
 	text-transform: uppercase;
 	color: var(--app-ink-muted);
+}
+
+.app-settings-backup-status-line {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	padding: 0 18px 10px;
+}
+
+.app-settings-backup-pill {
+	display: inline-flex;
+	align-items: center;
+	height: 26px;
+	padding: 0 10px;
+	border-radius: 999px;
+	font-size: 11px;
+	font-weight: 640;
+	letter-spacing: 0.02em;
+	color: var(--app-ink-muted);
+	background: #f3f4f6;
+	border: 1px solid #e5e7eb;
+}
+
+.app-settings-backup-pill--success {
+	color: #166534;
+	background: #ecfdf3;
+	border-color: #bbf7d0;
+}
+
+.app-settings-backup-pill--failed {
+	color: #991b1b;
+	background: #fef2f2;
+	border-color: #fecaca;
+}
+
+.app-settings-backup-status-text {
+	font-size: 12px;
+	color: var(--app-ink-muted);
+}
+
+.app-settings-backup-quick-actions {
+	padding: 0 18px 12px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	gap: 12px;
+	flex-wrap: wrap;
 }
 
 .app-settings-list {
@@ -1191,6 +1247,10 @@ body {
 	font-size: 12px;
 	line-height: 1.45;
 	color: var(--app-ink-muted);
+}
+
+.app-settings-row__hint--preline {
+	white-space: pre-line;
 }
 
 .app-settings-row__control {
@@ -1366,6 +1426,155 @@ body {
 	align-items: center;
 	justify-content: flex-end;
 	gap: 10px;
+	position: sticky;
+	bottom: max(12px, env(safe-area-inset-bottom));
+	z-index: 40;
+	margin-left: auto;
+	width: fit-content;
+	padding: 8px 10px;
+	border-radius: 14px;
+	border: 1px solid rgba(209, 213, 219, 0.9);
+	background: rgba(255, 255, 255, 0.86);
+	box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
+	backdrop-filter: blur(6px) saturate(1.03);
+	-webkit-backdrop-filter: blur(6px) saturate(1.03);
+}
+
+.app-settings-footer .app-button {
+	min-width: 128px;
+}
+
+.app-settings-footer--backup {
+	justify-content: flex-start;
+	flex-wrap: wrap;
+	padding-top: 2px;
+}
+
+.app-settings-backup-file {
+	margin-top: 8px;
+	display: inline-flex;
+	align-items: center;
+	border-radius: 8px;
+	border: 1px dashed #d1d5db;
+	background: #f8fafc;
+	padding: 6px 10px;
+	font-size: 12px;
+	color: var(--app-ink-muted);
+}
+
+.app-settings-import {
+	margin-top: 2px;
+	border-radius: 12px;
+	border: 1px solid #e5e7eb;
+	background: #ffffff;
+	padding: 12px;
+}
+
+.app-settings-import__file {
+	width: 100%;
+	margin-top: 10px;
+}
+
+.app-settings-import__footer {
+	margin-top: 10px;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+}
+
+.app-settings-import__mode {
+	width: 100%;
+	min-width: 260px;
+	flex: 1;
+}
+
+.app-settings-custom-select {
+	position: relative;
+	width: 100%;
+}
+
+.app-settings-custom-select .app-dropdown {
+	position: absolute;
+	top: 100%;
+	left: 0;
+	right: 0;
+	display: block;
+	height: 0;
+	width: 100%;
+}
+
+.app-settings-custom-select__trigger {
+	position: relative;
+	display: flex;
+	width: 100%;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+	padding-right: 30px;
+	text-align: left;
+	cursor: pointer;
+}
+
+.app-settings-custom-select__trigger::after {
+	content: "";
+	position: absolute;
+	right: 12px;
+	top: 50%;
+	width: 7px;
+	height: 7px;
+	border-right: 1.8px solid #6b7280;
+	border-bottom: 1.8px solid #6b7280;
+	transform: translateY(-65%) rotate(45deg);
+	pointer-events: none;
+}
+
+.app-settings-custom-select__value {
+	display: block;
+	width: 100%;
+	font-size: 13px;
+	line-height: 1.2;
+	color: var(--app-ink);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.app-settings-custom-select__menu {
+	top: 4px;
+	left: 0;
+	right: auto;
+	min-width: 100%;
+	width: max-content;
+	max-width: min(420px, calc(100vw - 42px));
+	z-index: 1080;
+}
+
+.app-settings-custom-select__option {
+	width: 100%;
+	justify-content: flex-start;
+	text-align: left;
+}
+
+.app-settings-import__controls {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+}
+
+.app-settings-backup-actions {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	flex-wrap: wrap;
+}
+
+.app-settings-backup-actions__group {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	flex-wrap: wrap;
 }
 
 @media (max-width: 1023px) {
@@ -1414,10 +1623,50 @@ body {
 		align-items: flex-start;
 	}
 	.app-settings-footer {
+		bottom: max(10px, env(safe-area-inset-bottom));
+		margin-left: 0;
+		width: 100%;
 		justify-content: stretch;
-		flex-direction: column-reverse;
+		flex-direction: row;
+	}
+	.app-settings-backup-status-line {
+		flex-direction: column;
+		align-items: flex-start;
 	}
 	.app-settings-footer .app-button {
+		width: 100%;
+		min-width: 0;
+	}
+	.app-settings-import__footer {
+		flex-direction: column;
+		align-items: stretch;
+	}
+	.app-settings-import__mode {
+		width: 100%;
+		min-width: 0;
+	}
+	.app-settings-import__controls {
+		width: 100%;
+		flex-direction: column;
+		align-items: stretch;
+	}
+	.app-settings-backup-quick-actions {
+		padding-left: 14px;
+		padding-right: 14px;
+		justify-content: stretch;
+	}
+	.app-settings-backup-quick-actions .app-button {
+		width: 100%;
+	}
+	.app-settings-backup-actions {
+		flex-direction: column;
+		align-items: stretch;
+	}
+	.app-settings-backup-actions__group {
+		flex-direction: column;
+		align-items: stretch;
+	}
+	.app-settings-backup-actions .app-button {
 		width: 100%;
 	}
 	.app-settings-cache-card__actions {
@@ -1679,6 +1928,8 @@ body {
 
 .app-select {
 	appearance: none;
+	-webkit-appearance: none;
+	-moz-appearance: none;
 	background-image:
 		linear-gradient(45deg, transparent 50%, #6b7280 50%),
 		linear-gradient(135deg, #6b7280 50%, transparent 50%);
@@ -1688,6 +1939,15 @@ body {
 	background-size: 5px 5px;
 	background-repeat: no-repeat;
 	padding-right: 28px;
+	line-height: 1.2;
+	cursor: pointer;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	overflow: hidden;
+}
+
+.app-select::-ms-expand {
+	display: none;
 }
 
 .app-pagination-bar {

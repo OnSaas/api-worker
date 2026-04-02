@@ -136,6 +136,63 @@ export type Settings = {
 	runtime_config?: RuntimeProxyConfig;
 };
 
+export type BackupSyncMode = "push" | "pull" | "two_way";
+
+export type BackupConflictPolicy = "local_wins" | "remote_wins";
+
+export type BackupImportMode = "merge" | "replace";
+
+export type BackupSettings = {
+	enabled: boolean;
+	schedule_time: string;
+	sync_mode: BackupSyncMode;
+	conflict_policy: BackupConflictPolicy;
+	import_mode: BackupImportMode;
+	webdav_url: string;
+	webdav_username: string;
+	webdav_password: string;
+	webdav_path: string;
+	keep_versions: number;
+	instance_id: string;
+	last_sync_at: string | null;
+	last_sync_status: "success" | "failed" | "idle";
+	last_sync_message: string | null;
+};
+
+export type BackupSyncResult = {
+	ok: boolean;
+	mode: BackupSyncMode;
+	action: "push" | "pull" | "noop";
+	synced_at: string;
+	local_revision: number;
+	remote_revision: number | null;
+	message: string;
+};
+
+export type BackupImportResult = {
+	summary: {
+		settings: {
+			created: number;
+			updated: number;
+			deleted: number;
+		};
+		sites: {
+			created: number;
+			updated: number;
+			deleted: number;
+			call_tokens_replaced: number;
+		};
+		tokens: {
+			created: number;
+			updated: number;
+			deleted: number;
+		};
+	};
+	mode: BackupImportMode;
+	dry_run: boolean;
+	warning?: string | null;
+};
+
 export type RuntimeProxySettings = {
 	upstream_timeout_ms: number;
 	retry_max_retries: number;
