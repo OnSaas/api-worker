@@ -37,6 +37,7 @@ import {
 import type {
 	AdminData,
 	BackupImportMode,
+	BackupManualAction,
 	BackupImportResult,
 	BackupSettings,
 	BackupSyncResult,
@@ -1750,6 +1751,14 @@ const App = () => {
 				pushNotice("warning", "备份历史保留数量需为正整数");
 				return;
 			}
+			const settingsChanged =
+				JSON.stringify(settingsForm) !== JSON.stringify(settingsFormSnapshot);
+			const backupChanged =
+				JSON.stringify(pickEditableBackupSettings(backupSettings)) !==
+				JSON.stringify(backupSettingsSnapshot);
+			if (!settingsChanged && !backupChanged) {
+				return;
+			}
 			startAction(actionKey);
 			const payload: Record<string, unknown> = {
 				log_retention_days: retention,
@@ -1793,12 +1802,8 @@ const App = () => {
 				payload.admin_password = password;
 			}
 			try {
-				await Promise.all([
-					apiFetch("/api/settings", {
-						method: "PUT",
-						body: JSON.stringify(payload),
-					}),
-					apiFetch("/api/backup/sync-config", {
+				if (backupChanged) {
+					await apiFetch("/api/backup/sync-config", {
 						method: "PUT",
 						body: JSON.stringify({
 							enabled: backupSettings.enabled,
@@ -1812,8 +1817,14 @@ const App = () => {
 							webdav_path: backupSettings.webdav_path.trim(),
 							keep_versions: backupKeepVersions,
 						}),
-					}),
-				]);
+					});
+				}
+				if (settingsChanged) {
+					await apiFetch("/api/settings", {
+						method: "PUT",
+						body: JSON.stringify(payload),
+					});
+				}
 				await Promise.all([
 					loadSettings(),
 					loadRetryErrorCodes(),
@@ -1837,7 +1848,9 @@ const App = () => {
 			loadSettings,
 			pushNotice,
 			settingsForm,
+			settingsFormSnapshot,
 			startAction,
+			backupSettingsSnapshot,
 		],
 	);
 
@@ -1926,48 +1939,62 @@ const App = () => {
 		startAction,
 	]);
 
-	const handleBackupSyncNow = useCallback(async () => {
-		const actionKey = buildActionKey("backup:sync");
-		if (isActionPending(actionKey)) {
-			return;
-		}
-		startAction(actionKey);
-		try {
-			const result = await apiFetch<BackupSyncResult>("/api/backup/sync-now", {
-				method: "POST",
-				body: JSON.stringify({ mode: backupSettings.sync_mode }),
-			});
-			await loadBackupSettings();
-			if (result.action === "pull") {
-				await Promise.all([
-					loadSites(),
-					loadTokens(),
-					loadSettings(),
-					loadRetryErrorCodes(),
-				]);
+	const handleBackupSyncNow = useCallback(
+		async (action: BackupManualAction) => {
+			const actionKey = buildActionKey(`backup:${action}`);
+			if (
+				isActionPending(actionKey) ||
+				isActionPending(buildActionKey("backup:push")) ||
+				isActionPending(buildActionKey("backup:pull"))
+			) {
+				return;
 			}
-			pushNotice(
-				"success",
-				`同步完成：模式 ${result.mode}，动作 ${result.action}`,
-			);
-		} catch (error) {
-			pushNotice("error", (error as Error).message);
-		} finally {
-			endAction(actionKey);
-		}
-	}, [
-		apiFetch,
-		backupSettings.sync_mode,
-		endAction,
-		isActionPending,
-		loadBackupSettings,
-		loadRetryErrorCodes,
-		loadSettings,
-		loadSites,
-		loadTokens,
-		pushNotice,
-		startAction,
-	]);
+			startAction(actionKey);
+			try {
+				const result = await apiFetch<BackupSyncResult>(
+					"/api/backup/sync-now",
+					{
+						method: "POST",
+						body: JSON.stringify({ action }),
+					},
+				);
+				await loadBackupSettings();
+				if (result.action === "pull") {
+					await Promise.all([
+						loadSites(),
+						loadTokens(),
+						loadSettings(),
+						loadRetryErrorCodes(),
+					]);
+				}
+				pushNotice("success", action === "push" ? "上传完成" : "下载完成");
+			} catch (error) {
+				pushNotice("error", (error as Error).message);
+			} finally {
+				endAction(actionKey);
+			}
+		},
+		[
+			apiFetch,
+			endAction,
+			isActionPending,
+			loadBackupSettings,
+			loadRetryErrorCodes,
+			loadSettings,
+			loadSites,
+			loadTokens,
+			pushNotice,
+			startAction,
+		],
+	);
+
+	const handleBackupPushNow = useCallback(async () => {
+		await handleBackupSyncNow("push");
+	}, [handleBackupSyncNow]);
+
+	const handleBackupPullNow = useCallback(async () => {
+		await handleBackupSyncNow("pull");
+	}, [handleBackupSyncNow]);
 
 	const handleSiteDelete = useCallback(
 		async (id: string) => {
@@ -2544,7 +2571,8 @@ const App = () => {
 					backupImportFileName={backupImportFile?.name ?? ""}
 					isBackupExporting={isActionPending(buildActionKey("backup:export"))}
 					isBackupImporting={isActionPending(buildActionKey("backup:import"))}
-					isBackupSyncing={isActionPending(buildActionKey("backup:sync"))}
+					isBackupPushing={isActionPending(buildActionKey("backup:push"))}
+					isBackupPulling={isActionPending(buildActionKey("backup:pull"))}
 					onSubmit={handleSettingsSubmit}
 					onFormChange={handleSettingsFormChange}
 					onBackupSettingsChange={handleBackupSettingsChange}
@@ -2552,7 +2580,8 @@ const App = () => {
 					onBackupImportModeChange={handleBackupImportModeChange}
 					onBackupImportFileChange={handleBackupImportFileChange}
 					onBackupImport={handleBackupImport}
-					onBackupSyncNow={handleBackupSyncNow}
+					onBackupPushNow={handleBackupPushNow}
+					onBackupPullNow={handleBackupPullNow}
 					onApplyRecommendedConfig={handleApplyRecommendedConfig}
 				/>
 			);

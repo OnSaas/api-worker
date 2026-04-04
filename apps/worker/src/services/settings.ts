@@ -123,6 +123,8 @@ const BACKUP_INSTANCE_ID_KEY = "backup_instance_id";
 const BACKUP_LAST_SYNC_AT_KEY = "backup_last_sync_at";
 const BACKUP_LAST_SYNC_STATUS_KEY = "backup_last_sync_status";
 const BACKUP_LAST_SYNC_MESSAGE_KEY = "backup_last_sync_message";
+const BACKUP_PENDING_CHANGES_KEY = "backup_pending_changes";
+const BACKUP_PENDING_AT_KEY = "backup_pending_at";
 
 const RUNTIME_SETTING_KEYS = [
 	PROXY_UPSTREAM_TIMEOUT_KEY,
@@ -167,6 +169,8 @@ const BACKUP_SETTING_KEYS = [
 	BACKUP_LAST_SYNC_AT_KEY,
 	BACKUP_LAST_SYNC_STATUS_KEY,
 	BACKUP_LAST_SYNC_MESSAGE_KEY,
+	BACKUP_PENDING_CHANGES_KEY,
+	BACKUP_PENDING_AT_KEY,
 ] as const;
 
 export type RuntimeProxyConfig = {
@@ -249,6 +253,9 @@ export type BackupSettings = {
 	last_sync_at: string | null;
 	last_sync_status: "success" | "failed" | "idle";
 	last_sync_message: string | null;
+	pending_changes: boolean;
+	pending_at: string | null;
+	config_ready: boolean;
 };
 
 type SettingSnapshot<T> = {
@@ -383,6 +390,18 @@ function clearRuntimeSnapshots(): void {
 
 function clearBackupSnapshots(): void {
 	backupSettingsSnapshot = null;
+}
+
+export function isBackupConfigReady(config: {
+	webdav_url: string;
+	webdav_username: string;
+	webdav_password: string;
+}): boolean {
+	return (
+		config.webdav_url.trim().length > 0 &&
+		config.webdav_username.trim().length > 0 &&
+		config.webdav_password.trim().length > 0
+	);
 }
 
 function normalizeBackupSyncMode(value: string | undefined): BackupSyncMode {
@@ -1118,6 +1137,22 @@ export async function getBackupSettings(
 				: "idle",
 		last_sync_message:
 			(settings[BACKUP_LAST_SYNC_MESSAGE_KEY] ?? "").trim() || null,
+		pending_changes: parseBooleanSetting(
+			settings[BACKUP_PENDING_CHANGES_KEY] ?? null,
+			false,
+		),
+		pending_at: (settings[BACKUP_PENDING_AT_KEY] ?? "").trim() || null,
+		config_ready: isBackupConfigReady({
+			webdav_url:
+				(settings[BACKUP_WEBDAV_URL_KEY] ?? "").trim() ||
+				DEFAULT_BACKUP_WEBDAV_URL,
+			webdav_username:
+				(settings[BACKUP_WEBDAV_USERNAME_KEY] ?? "").trim() ||
+				DEFAULT_BACKUP_WEBDAV_USERNAME,
+			webdav_password:
+				(settings[BACKUP_WEBDAV_PASSWORD_KEY] ?? "").trim() ||
+				DEFAULT_BACKUP_WEBDAV_PASSWORD,
+		}),
 	};
 	backupSettingsSnapshot = {
 		value,
@@ -1249,11 +1284,42 @@ export async function setBackupSettings(
 			),
 		);
 	}
+	if (update.pending_changes !== undefined) {
+		tasks.push(
+			upsertSetting(
+				db,
+				BACKUP_PENDING_CHANGES_KEY,
+				update.pending_changes ? "1" : "0",
+			),
+		);
+	}
+	if (update.pending_at !== undefined) {
+		tasks.push(
+			upsertSetting(db, BACKUP_PENDING_AT_KEY, update.pending_at ?? ""),
+		);
+	}
 	if (tasks.length === 0) {
 		return;
 	}
 	await Promise.all(tasks);
 	clearBackupSnapshots();
+}
+
+export async function markBackupPendingChanges(
+	db: D1Database,
+	pendingAt: string = nowIso(),
+): Promise<void> {
+	await setBackupSettings(db, {
+		pending_changes: true,
+		pending_at: pendingAt,
+	});
+}
+
+export async function clearBackupPendingChanges(db: D1Database): Promise<void> {
+	await setBackupSettings(db, {
+		pending_changes: false,
+		pending_at: null,
+	});
 }
 
 /**

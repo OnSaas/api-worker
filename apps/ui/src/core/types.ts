@@ -144,6 +144,8 @@ export type BackupConflictPolicy = "local_wins" | "remote_wins";
 
 export type BackupImportMode = "merge" | "replace";
 
+export type BackupManualAction = "push" | "pull";
+
 export type BackupSettings = {
 	enabled: boolean;
 	schedule_time: string;
@@ -159,6 +161,9 @@ export type BackupSettings = {
 	last_sync_at: string | null;
 	last_sync_status: "success" | "failed" | "idle";
 	last_sync_message: string | null;
+	pending_changes: boolean;
+	pending_at: string | null;
+	config_ready: boolean;
 };
 
 export type BackupSyncResult = {

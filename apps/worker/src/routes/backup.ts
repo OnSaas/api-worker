@@ -127,12 +127,17 @@ backup.put("/sync-config", async (c) => {
 
 backup.post("/sync-now", async (c) => {
 	const body = (await c.req.json().catch(() => null)) as {
+		action?: "push" | "pull";
 		mode?: "push" | "pull" | "two_way";
 	} | null;
+	const overrideMode =
+		body?.action === "push" || body?.action === "pull"
+			? body.action
+			: body?.mode;
 	try {
 		const result = await executeBackupSync(c.env.DB, {
 			reason: "manual",
-			overrideMode: body?.mode,
+			overrideMode,
 		});
 		return c.json(result);
 	} catch (error) {

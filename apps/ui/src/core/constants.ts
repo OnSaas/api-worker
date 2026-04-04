@@ -115,6 +115,9 @@ export const initialBackupSettings: BackupSettings = {
 	last_sync_at: null,
 	last_sync_status: "idle",
 	last_sync_message: null,
+	pending_changes: false,
+	pending_at: null,
+	config_ready: false,
 };
 
 export const initialDashboardQuery: DashboardQuery = {

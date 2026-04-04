@@ -28,7 +28,8 @@ type SettingsViewProps = {
 	backupImportFileName: string;
 	isBackupExporting: boolean;
 	isBackupImporting: boolean;
-	isBackupSyncing: boolean;
+	isBackupPushing: boolean;
+	isBackupPulling: boolean;
 	onSubmit: (event: Event) => void;
 	onFormChange: (patch: Partial<SettingsForm>) => void;
 	onBackupSettingsChange: (patch: Partial<BackupSettings>) => void;
@@ -36,7 +37,8 @@ type SettingsViewProps = {
 	onBackupImportModeChange: (mode: BackupImportMode) => void;
 	onBackupImportFileChange: (file: File | null) => void;
 	onBackupImport: () => void;
-	onBackupSyncNow: () => void;
+	onBackupPushNow: () => void;
+	onBackupPullNow: () => void;
 	onApplyRecommendedConfig: () => void;
 };
 
@@ -122,7 +124,8 @@ export const SettingsView = ({
 	backupImportFileName,
 	isBackupExporting,
 	isBackupImporting,
-	isBackupSyncing,
+	isBackupPushing,
+	isBackupPulling,
 	onSubmit,
 	onFormChange,
 	onBackupSettingsChange,
@@ -130,7 +133,8 @@ export const SettingsView = ({
 	onBackupImportModeChange,
 	onBackupImportFileChange,
 	onBackupImport,
-	onBackupSyncNow,
+	onBackupPushNow,
+	onBackupPullNow,
 	onApplyRecommendedConfig,
 }: SettingsViewProps) => {
 	const [openBackupSelectKey, setOpenBackupSelectKey] = useState<string | null>(
@@ -238,6 +242,15 @@ export const SettingsView = ({
 	const manualImportModeLabel =
 		backupImportModeOptions.find((option) => option.value === backupImportMode)
 			?.label ?? backupImportModeOptions[0].label;
+	const backupPendingLabel = backupSettings.pending_changes
+		? "有待备份变更"
+		: "本地与远端已同步";
+	const backupPendingClass = backupSettings.pending_changes
+		? "app-settings-backup-pill app-settings-backup-pill--warning"
+		: "app-settings-backup-pill app-settings-backup-pill--success";
+	const backupConfigLabel = backupSettings.config_ready
+		? "WebDAV 已就绪"
+		: "WebDAV 未配置完整";
 
 	useEffect(() => {
 		const handleDocumentClick = (event: MouseEvent) => {
@@ -1107,11 +1120,12 @@ export const SettingsView = ({
 					<div class="app-settings-group__header">
 						<h4 class="app-settings-group__title">数据备份与同步</h4>
 						<p class="app-settings-group__caption">
-							全量导出（含敏感字段）与 WebDAV 同步
+							全量导出（含敏感字段）与 WebDAV 上传/下载
 						</p>
 					</div>
 					<div class="app-settings-backup-status-line">
 						<span class={backupStatusClass}>{backupStatusLabel}</span>
+						<span class={backupPendingClass}>{backupPendingLabel}</span>
 						<span class="app-settings-backup-status-text">
 							{backupSettings.last_sync_at
 								? new Date(backupSettings.last_sync_at).toLocaleString(
@@ -1137,17 +1151,36 @@ export const SettingsView = ({
 							variant="primary"
 							size="lg"
 							type="button"
-							disabled={isBackupSyncing}
-							onClick={onBackupSyncNow}
+							disabled={
+								!backupSettings.config_ready ||
+								isBackupPushing ||
+								isBackupPulling
+							}
+							onClick={onBackupPushNow}
 						>
-							{isBackupSyncing ? "同步中..." : "立即同步"}
+							{isBackupPushing ? "上传中..." : "立即上传"}
+						</Button>
+						<Button
+							variant="default"
+							size="lg"
+							type="button"
+							disabled={
+								!backupSettings.config_ready ||
+								isBackupPushing ||
+								isBackupPulling
+							}
+							onClick={onBackupPullNow}
+						>
+							{isBackupPulling ? "下载中..." : "立即下载"}
 						</Button>
 					</div>
 					<div class="app-settings-list app-settings-list--allow-overflow">
 						<div class="app-settings-row">
 							<div class="app-settings-row__main">
 								<span class="app-settings-row__label">启用定时备份</span>
-								<p class="app-settings-row__hint">每天按时间自动执行同步</p>
+								<p class="app-settings-row__hint">
+									启用后每天按时间执行计划同步；本地配置变更会尝试自动上传
+								</p>
 							</div>
 							<div class="app-settings-row__switch">
 								<Switch
@@ -1536,6 +1569,25 @@ export const SettingsView = ({
 										</Button>
 									</div>
 								</div>
+							</div>
+						</div>
+						<div class="app-settings-row app-settings-row--stack">
+							<div class="app-settings-row__main">
+								<span class="app-settings-row__label">备份配置状态</span>
+								<p class="app-settings-row__hint">
+									{backupConfigLabel}
+									{backupSettings.pending_at
+										? ` · 待备份时间 ${new Date(
+												backupSettings.pending_at,
+											).toLocaleString("zh-CN", { hour12: false })}`
+										: ""}
+								</p>
+								{!backupSettings.config_ready ? (
+									<p class="app-settings-row__hint">
+										需填写 WebDAV
+										地址、用户名和密码后，才能自动备份或手动上传/下载。
+									</p>
+								) : null}
 							</div>
 						</div>
 						<div class="app-settings-row app-settings-row--stack">

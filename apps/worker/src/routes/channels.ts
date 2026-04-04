@@ -13,9 +13,8 @@ import {
 	listChannels,
 	updateChannel,
 } from "../services/channel-repo";
-import {
-	updateChannelTestResult,
-} from "../services/channel-testing";
+import { updateChannelTestResult } from "../services/channel-testing";
+import { triggerBackupAfterDataChange } from "../services/backup-auto-sync";
 import { executeSiteTestTask } from "../services/site-task-dispatcher";
 import { invalidateSelectionHotCache } from "../services/hot-kv";
 import { generateToken } from "../utils/crypto";
@@ -108,6 +107,7 @@ channels.post("/", async (c) => {
 		created_at: now,
 		updated_at: now,
 	});
+	await triggerBackupAfterDataChange(c.env.DB);
 
 	await invalidateSelectionHotCache(c.env.KV_HOT);
 	return c.json({ id });
@@ -152,6 +152,7 @@ channels.patch("/:id", async (c) => {
 		last_checkin_at: current.last_checkin_at ?? null,
 		updated_at: nowIso(),
 	});
+	await triggerBackupAfterDataChange(c.env.DB);
 
 	await invalidateSelectionHotCache(c.env.KV_HOT);
 	return c.json({ ok: true });
@@ -163,6 +164,7 @@ channels.patch("/:id", async (c) => {
 channels.delete("/:id", async (c) => {
 	const id = c.req.param("id");
 	await deleteChannel(c.env.DB, id);
+	await triggerBackupAfterDataChange(c.env.DB);
 	await invalidateSelectionHotCache(c.env.KV_HOT);
 	return c.json({ ok: true });
 });

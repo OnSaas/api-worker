@@ -4,6 +4,7 @@ import {
 	getCheckinSchedulerStub,
 	shouldResetLastRun,
 } from "../services/checkin-scheduler";
+import { triggerBackupAfterDataChange } from "../services/backup-auto-sync";
 import {
 	getChannelRecoveryProbeEnabled,
 	getChannelRecoveryProbeScheduleTime,
@@ -701,6 +702,7 @@ settings.put("/", async (c) => {
 			...(scheduleReset ? { body: JSON.stringify({ reset: true }) } : {}),
 		});
 	}
+	await triggerBackupAfterDataChange(db);
 
 	return c.json({ ok: true });
 });

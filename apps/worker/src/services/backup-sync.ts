@@ -7,6 +7,7 @@ import {
 	type BackupPayload,
 } from "./backup";
 import {
+	clearBackupPendingChanges,
 	getBackupSettings,
 	setBackupSettings,
 	type BackupConflictPolicy,
@@ -20,7 +21,7 @@ import {
 } from "./webdav";
 import { nowIso } from "../utils/time";
 
-type SyncReason = "manual" | "schedule";
+type SyncReason = "manual" | "schedule" | "change";
 
 export type SyncAction = "push" | "pull" | "noop";
 
@@ -127,6 +128,17 @@ export function resolveBackupSyncError(error: unknown): BackupSyncErrorInfo {
 			userMessage: buildTwoLineMessage(
 				"同步失败：未配置 WebDAV 用户名。",
 				"请在“系统设置 > 数据备份与同步”填写用户名后重试。",
+			),
+		};
+	}
+	if (rawMessage === "backup_webdav_password_required") {
+		return {
+			code: rawMessage,
+			status: 400,
+			rawMessage,
+			userMessage: buildTwoLineMessage(
+				"同步失败：未配置 WebDAV 密码。",
+				"请在“系统设置 > 数据备份与同步”填写密码后重试。",
 			),
 		};
 	}
@@ -266,12 +278,16 @@ const buildWebdavConfig = (
 const validateWebdavConfig = (config: {
 	webdav_url: string;
 	webdav_username: string;
+	webdav_password: string;
 }) => {
 	if (!config.webdav_url.trim()) {
 		throw new Error("backup_webdav_url_required");
 	}
 	if (!config.webdav_username.trim()) {
 		throw new Error("backup_webdav_username_required");
+	}
+	if (!config.webdav_password.trim()) {
+		throw new Error("backup_webdav_password_required");
 	}
 };
 
@@ -328,6 +344,7 @@ const syncSuccess = async (
 		last_sync_status: "success",
 		last_sync_message: result.message,
 	});
+	await clearBackupPendingChanges(db);
 	return result;
 };
 

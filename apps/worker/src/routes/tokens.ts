@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../env";
+import { triggerBackupAfterDataChange } from "../services/backup-auto-sync";
 import { generateToken, sha256Hex } from "../utils/crypto";
 import { jsonError } from "../utils/http";
 import { safeJsonParse } from "../utils/json";
@@ -108,6 +109,7 @@ tokens.post("/", async (c) => {
 			now,
 		)
 		.run();
+	await triggerBackupAfterDataChange(c.env.DB);
 
 	return c.json({
 		id,
@@ -164,6 +166,7 @@ tokens.patch("/:id", async (c) => {
 			id,
 		)
 		.run();
+	await triggerBackupAfterDataChange(c.env.DB);
 
 	return c.json({ ok: true });
 });
@@ -190,6 +193,7 @@ tokens.get("/:id/reveal", async (c) => {
 tokens.delete("/:id", async (c) => {
 	const id = c.req.param("id");
 	await c.env.DB.prepare("DELETE FROM tokens WHERE id = ?").bind(id).run();
+	await triggerBackupAfterDataChange(c.env.DB);
 	return c.json({ ok: true });
 });
 

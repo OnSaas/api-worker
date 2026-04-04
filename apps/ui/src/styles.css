@@ -1184,6 +1184,12 @@ body {
 	border-color: #fecaca;
 }
 
+.app-settings-backup-pill--warning {
+	color: #92400e;
+	background: #fffbeb;
+	border-color: #fcd34d;
+}
+
 .app-settings-backup-status-text {
 	font-size: 12px;
 	color: var(--app-ink-muted);

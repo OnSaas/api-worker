@@ -22,6 +22,7 @@ import {
 	runCheckinAllViaWorker,
 	runCheckinSingleViaWorker,
 } from "../services/site-task-dispatcher";
+import { triggerBackupAfterDataChange } from "../services/backup-auto-sync";
 import { generateToken } from "../utils/crypto";
 import { jsonError } from "../utils/http";
 import { nowIso } from "../utils/time";
@@ -317,6 +318,7 @@ sites.post("/", async (c) => {
 		id,
 		toCallTokenRows(id, callTokens, now),
 	);
+	await triggerBackupAfterDataChange(c.env.DB);
 
 	await invalidateSelectionHotCache(c.env.KV_HOT);
 	return c.json({ id });
@@ -419,6 +421,7 @@ sites.patch("/:id", async (c) => {
 			toCallTokenRows(id, callTokens, nowIso()),
 		);
 	}
+	await triggerBackupAfterDataChange(c.env.DB);
 
 	await invalidateSelectionHotCache(c.env.KV_HOT);
 	return c.json({ ok: true });
@@ -427,6 +430,7 @@ sites.patch("/:id", async (c) => {
 sites.delete("/:id", async (c) => {
 	const id = c.req.param("id");
 	await deleteChannel(c.env.DB, id);
+	await triggerBackupAfterDataChange(c.env.DB);
 	await invalidateSelectionHotCache(c.env.KV_HOT);
 	return c.json({ ok: true });
 });
@@ -460,7 +464,12 @@ sites.post("/probe-recovery", async (c) => {
 
 sites.post("/:id/checkin", async (c) => {
 	const id = c.req.param("id");
-	const result = await runCheckinSingleViaWorker(c.env.DB, c.env, id, new Date());
+	const result = await runCheckinSingleViaWorker(
+		c.env.DB,
+		c.env,
+		id,
+		new Date(),
+	);
 	if (!result) {
 		return jsonError(c, 404, "site_not_found", "site_not_found");
 	}

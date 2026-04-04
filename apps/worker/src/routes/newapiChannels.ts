@@ -20,6 +20,7 @@ import {
 	fetchChannelModels,
 	updateChannelTestResult,
 } from "../services/channel-testing";
+import { triggerBackupAfterDataChange } from "../services/backup-auto-sync";
 import { invalidateSelectionHotCache } from "../services/hot-kv";
 import {
 	mergeMetadata,
@@ -207,6 +208,9 @@ newapi.put("/tag", async (c) => {
 			.bind(weight, priority, mergedMetadata, nowIso(), row.id)
 			.run();
 	}
+	if (targets.length > 0) {
+		await triggerBackupAfterDataChange(c.env.DB);
+	}
 
 	await invalidateSelectionHotCache(c.env.KV_HOT);
 	return newApiSuccess(c);
@@ -228,6 +232,9 @@ newapi.post("/tag/enabled", async (c) => {
 			.bind("active", nowIso(), row.id)
 			.run();
 	}
+	if (targets.length > 0) {
+		await triggerBackupAfterDataChange(c.env.DB);
+	}
 
 	await invalidateSelectionHotCache(c.env.KV_HOT);
 	return newApiSuccess(c);
@@ -248,6 +255,9 @@ newapi.post("/tag/disabled", async (c) => {
 		)
 			.bind("disabled", nowIso(), row.id)
 			.run();
+	}
+	if (targets.length > 0) {
+		await triggerBackupAfterDataChange(c.env.DB);
 	}
 
 	await invalidateSelectionHotCache(c.env.KV_HOT);
@@ -298,6 +308,7 @@ newapi.post("/", async (c) => {
 		created_at: now,
 		updated_at: now,
 	});
+	await triggerBackupAfterDataChange(c.env.DB);
 
 	await invalidateSelectionHotCache(c.env.KV_HOT);
 	return newApiSuccess(c);
@@ -352,6 +363,7 @@ newapi.put("/", async (c) => {
 		last_checkin_at: current.last_checkin_at ?? null,
 		updated_at: nowIso(),
 	});
+	await triggerBackupAfterDataChange(c.env.DB);
 
 	await invalidateSelectionHotCache(c.env.KV_HOT);
 	return newApiSuccess(c);
@@ -364,6 +376,7 @@ newapi.delete("/:id", async (c) => {
 		return newApiFailure(c, 404, "渠道不存在");
 	}
 	await deleteChannel(c.env.DB, id);
+	await triggerBackupAfterDataChange(c.env.DB);
 	await invalidateSelectionHotCache(c.env.KV_HOT);
 	return newApiSuccess(c);
 });
