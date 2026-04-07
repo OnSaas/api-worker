@@ -22,6 +22,12 @@
 
 ### 修复
 
+- **[proxy/sites/admin-ui]**: 修复候选站点筛选与真实模型解析口径不一致、调用 token 模型写回污染，以及使用日志缺少策略判定上下文的问题 — by Codex
+  - 方案: [202604071250_candidate-routing-alignment](plan/202604071250_candidate-routing-alignment/)
+- **[worker/proxy]**: 修复渠道不支持目标模型时仍可能回退到首个已知模型并误发请求的问题；现在仅允许显式 `model_mapping` 改写模型，未命中模型的渠道会在候选筛选与实际请求阶段一并跳过 — by Codex
+  - 类型: 快速修改（无方案包）
+  - 文件: apps/worker/src/services/channel-routing.ts, apps/worker/src/shared/proxy.ts
+
 - **[tooling]**: 修复 Linux `systemd --user` 自启动仍经由 `--bg` 二次派生导致开机状态误判，改为直接托管守护进程并增强 `autostart status` 运行态识别 — by openclaw
   - 方案: [202604031515_linux-autostart-boot-fix](archive/2026-04/202604031515_linux-autostart-boot-fix/)
 

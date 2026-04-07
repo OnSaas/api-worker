@@ -70,15 +70,51 @@ const formatStream = (value: boolean | number | null | undefined) => {
 	return value ? "是" : "否";
 };
 
-const formatErrorMeta = (value: string | null | undefined): string | null => {
+type ParsedErrorMeta = {
+	text: string | null;
+	record: Record<string, unknown> | null;
+};
+
+const parseErrorMeta = (value: string | null | undefined): ParsedErrorMeta => {
 	if (!value) {
-		return null;
+		return { text: null, record: null };
 	}
 	try {
-		return JSON.stringify(JSON.parse(value), null, 2);
+		const parsed = JSON.parse(value);
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+			return {
+				text: JSON.stringify(parsed, null, 2),
+				record: parsed as Record<string, unknown>,
+			};
+		}
+		return {
+			text: JSON.stringify(parsed, null, 2),
+			record: null,
+		};
 	} catch {
-		return value;
+		return { text: value, record: null };
 	}
+};
+
+const readMetaString = (
+	record: Record<string, unknown> | null,
+	key: string,
+): string | null => {
+	const value = record?.[key];
+	return typeof value === "string" && value.trim().length > 0 ? value : null;
+};
+
+const readMetaStringArray = (
+	record: Record<string, unknown> | null,
+	key: string,
+): string[] => {
+	const value = record?.[key];
+	if (!Array.isArray(value)) {
+		return [];
+	}
+	return value
+		.map((item) => (typeof item === "string" ? item.trim() : ""))
+		.filter((item) => item.length > 0);
 };
 
 const formatChannelLabel = (log: UsageLog): string => {
@@ -216,9 +252,32 @@ export const UsageView = ({
 			.sort((a, b) => Number(a) - Number(b))
 			.map((value) => ({ value, label: value }));
 	}, [filters.statuses, usage]);
-	const errorMetaText = useMemo(
-		() => formatErrorMeta(activeErrorLog?.error_meta_json),
+	const parsedErrorMeta = useMemo(
+		() => parseErrorMeta(activeErrorLog?.error_meta_json),
 		[activeErrorLog],
+	);
+	const errorMetaText = parsedErrorMeta.text;
+	const errorMetaRecord = parsedErrorMeta.record;
+	const policyAction = readMetaString(errorMetaRecord, "policy_action");
+	const resolvedPolicyAction = readMetaString(
+		errorMetaRecord,
+		"policy_resolved_action",
+	);
+	const policyMatchedKey = readMetaString(
+		errorMetaRecord,
+		"policy_matched_key",
+	);
+	const policyMatchedSet = readMetaString(
+		errorMetaRecord,
+		"policy_matched_set",
+	);
+	const normalizedErrorCode = readMetaString(
+		errorMetaRecord,
+		"normalized_error_code",
+	);
+	const policyLookupKeys = readMetaStringArray(
+		errorMetaRecord,
+		"policy_lookup_keys",
 	);
 
 	useEffect(() => {
@@ -676,6 +735,45 @@ export const UsageView = ({
 									</span>
 									<span>{activeErrorLog.usage_source ?? "-"}</span>
 								</div>
+								<div class="flex items-center justify-between gap-3">
+									<span class="text-[color:var(--app-ink-muted)]">
+										策略动作
+									</span>
+									<span>{policyAction ?? "-"}</span>
+								</div>
+								<div class="flex items-center justify-between gap-3">
+									<span class="text-[color:var(--app-ink-muted)]">
+										策略命中
+									</span>
+									<span>
+										{policyMatchedSet && policyMatchedKey
+											? `${policyMatchedSet}:${policyMatchedKey}`
+											: "-"}
+									</span>
+								</div>
+								<div class="flex items-center justify-between gap-3">
+									<span class="text-[color:var(--app-ink-muted)]">
+										归一错误码
+									</span>
+									<span>{normalizedErrorCode ?? "-"}</span>
+								</div>
+								<div class="flex items-center justify-between gap-3">
+									<span class="text-[color:var(--app-ink-muted)]">查找键</span>
+									<span>
+										{policyLookupKeys.length > 0
+											? policyLookupKeys.join(", ")
+											: "-"}
+									</span>
+								</div>
+								{resolvedPolicyAction &&
+								resolvedPolicyAction !== policyAction ? (
+									<div class="flex items-center justify-between gap-3">
+										<span class="text-[color:var(--app-ink-muted)]">
+											本地策略动作
+										</span>
+										<span>{resolvedPolicyAction}</span>
+									</div>
+								) : null}
 							</div>
 						</Card>
 						{activeErrorLog.error_message ? (

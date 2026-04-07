@@ -5,7 +5,12 @@ import { normalizeBaseUrl } from "../utils/url";
 import { updateCallTokenModels } from "./channel-call-token-repo";
 import { extractModelIds, modelsToJson } from "./channel-models";
 import { parseChannelMetadata, resolveProvider } from "./channel-metadata";
-import { updateChannelTestResult, testChannelTokens } from "./channel-testing";
+import { collectVerifiedTokenModelUpdates } from "./site-verification-token-models";
+import {
+	type ChannelTokenTestItem,
+	updateChannelTestResult,
+	testChannelTokens,
+} from "./channel-testing";
 import type { ChannelRow } from "./channel-types";
 import {
 	buildUpstreamChatRequest,
@@ -74,6 +79,7 @@ export type SiteVerificationResult = {
 		name?: string;
 	} | null;
 	discovered_models: string[];
+	token_results: ChannelTokenTestItem[];
 	token_summary: {
 		total: number;
 		success: number;
@@ -399,6 +405,7 @@ export async function verifySiteChannel(options: {
 	const service = defaultServiceResult();
 	const recovery = defaultRecoveryResult(channel.status);
 	let discoveredModels: string[] = [];
+	let tokenResults: ChannelTokenTestItem[] = [];
 	let selectedModel: string | null = null;
 	let selectedToken: VerificationToken | null = null;
 	let tokenSummary: SiteVerificationResult["token_summary"] = null;
@@ -430,6 +437,7 @@ export async function verifySiteChannel(options: {
 			selected_model: null,
 			selected_token: null,
 			discovered_models: [],
+			token_results: [],
 			token_summary: null,
 			trace,
 			checked_at: checkedAt,
@@ -443,6 +451,7 @@ export async function verifySiteChannel(options: {
 
 	if (supportsModelDiscovery(metadata.site_type)) {
 		const summary = await testChannelTokens(channel.base_url, tokens);
+		tokenResults = summary.items;
 		tokenSummary = {
 			total: summary.total,
 			success: summary.success,
@@ -509,6 +518,7 @@ export async function verifySiteChannel(options: {
 			selected_model: null,
 			selected_token: null,
 			discovered_models: modelSelection.all,
+			token_results: tokenResults,
 			token_summary: tokenSummary,
 			trace,
 			checked_at: checkedAt,
@@ -563,6 +573,7 @@ export async function verifySiteChannel(options: {
 			selected_model: selectedModel,
 			selected_token: null,
 			discovered_models: modelSelection.all,
+			token_results: tokenResults,
 			token_summary: tokenSummary,
 			trace,
 			checked_at: checkedAt,
@@ -617,6 +628,7 @@ export async function verifySiteChannel(options: {
 				name: selectedToken.name,
 			},
 			discovered_models: modelSelection.all,
+			token_results: tokenResults,
 			token_summary: tokenSummary,
 			trace,
 			checked_at: checkedAt,
@@ -665,6 +677,7 @@ export async function verifySiteChannel(options: {
 				name: selectedToken.name,
 			},
 			discovered_models: modelSelection.all,
+			token_results: tokenResults,
 			token_summary: tokenSummary,
 			trace,
 			checked_at: checkedAt,
@@ -779,6 +792,7 @@ export async function verifySiteChannel(options: {
 			name: selectedToken.name,
 		},
 		discovered_models: modelSelection.all,
+		token_results: tokenResults,
 		token_summary: tokenSummary,
 		trace,
 		checked_at: checkedAt,
@@ -791,16 +805,17 @@ export async function persistSiteVerificationResult(options: {
 	tokens: VerificationToken[];
 	result: SiteVerificationResult;
 }): Promise<void> {
-	const { db, channel, tokens, result } = options;
+	const { db, channel, result } = options;
 	const metadataJson = withVerificationSummary(
 		channel.metadata_json,
 		buildSummarySnapshot(result),
 	);
+	const updatedAt = nowIso();
 	await db
 		.prepare(
 			"UPDATE channels SET metadata_json = ?, updated_at = ? WHERE id = ?",
 		)
-		.bind(metadataJson, nowIso(), channel.id)
+		.bind(metadataJson, updatedAt, channel.id)
 		.run();
 
 	if (result.discovered_models.length > 0) {
@@ -810,15 +825,14 @@ export async function persistSiteVerificationResult(options: {
 			models: result.discovered_models,
 			modelsJson: modelsToJson(result.discovered_models),
 		});
-		for (const token of tokens) {
-			if (!token.id) {
-				continue;
-			}
+		for (const tokenResult of collectVerifiedTokenModelUpdates(
+			result.token_results,
+		)) {
 			await updateCallTokenModels(
 				db,
-				token.id,
-				result.discovered_models,
-				nowIso(),
+				tokenResult.tokenId,
+				tokenResult.models,
+				updatedAt,
 			);
 		}
 	} else {

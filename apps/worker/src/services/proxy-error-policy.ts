@@ -1,9 +1,18 @@
 export type ProxyErrorAction = "retry" | "sleep" | "disable" | "return";
+export type ProxyErrorPolicyMatchedSet = "return" | "disable" | "sleep" | null;
 
 export type ProxyErrorPolicySets = {
 	sleepErrorCodeSet: Set<string>;
 	disableErrorCodeSet: Set<string>;
 	returnErrorCodeSet: Set<string>;
+};
+
+export type ProxyErrorDecision = {
+	action: ProxyErrorAction;
+	lookupKeys: string[];
+	matchedKey: string | null;
+	matchedSet: ProxyErrorPolicyMatchedSet;
+	normalizedErrorCode: string | null;
 };
 
 function normalizeMessage(value: string | null): string | null {
@@ -56,26 +65,74 @@ export function buildProxyErrorLookupKeys(
 	return lookupKeys;
 }
 
+function findMatchedKey(
+	codeSet: Set<string>,
+	lookupKeys: string[],
+): string | null {
+	for (const key of lookupKeys) {
+		if (codeSet.has(key)) {
+			return key;
+		}
+	}
+	return null;
+}
+
+export function resolveProxyErrorDecision(
+	policy: ProxyErrorPolicySets,
+	errorCode: string | null,
+	errorMessage: string | null,
+): ProxyErrorDecision {
+	const lookupKeys = buildProxyErrorLookupKeys(errorCode, errorMessage);
+	const normalizedErrorCode = normalizeProxyErrorCode(errorCode) || null;
+	const matchedReturnKey = findMatchedKey(
+		policy.returnErrorCodeSet,
+		lookupKeys,
+	);
+	if (matchedReturnKey) {
+		return {
+			action: "return",
+			lookupKeys,
+			matchedKey: matchedReturnKey,
+			matchedSet: "return",
+			normalizedErrorCode,
+		};
+	}
+	const matchedDisableKey = findMatchedKey(
+		policy.disableErrorCodeSet,
+		lookupKeys,
+	);
+	if (matchedDisableKey) {
+		return {
+			action: "disable",
+			lookupKeys,
+			matchedKey: matchedDisableKey,
+			matchedSet: "disable",
+			normalizedErrorCode,
+		};
+	}
+	const matchedSleepKey = findMatchedKey(policy.sleepErrorCodeSet, lookupKeys);
+	if (matchedSleepKey) {
+		return {
+			action: "sleep",
+			lookupKeys,
+			matchedKey: matchedSleepKey,
+			matchedSet: "sleep",
+			normalizedErrorCode,
+		};
+	}
+	return {
+		action: "retry",
+		lookupKeys,
+		matchedKey: null,
+		matchedSet: null,
+		normalizedErrorCode,
+	};
+}
+
 export function resolveProxyErrorAction(
 	policy: ProxyErrorPolicySets,
 	errorCode: string | null,
 	errorMessage: string | null,
 ): ProxyErrorAction {
-	const lookupKeys = buildProxyErrorLookupKeys(errorCode, errorMessage);
-	for (const key of lookupKeys) {
-		if (policy.returnErrorCodeSet.has(key)) {
-			return "return";
-		}
-	}
-	for (const key of lookupKeys) {
-		if (policy.disableErrorCodeSet.has(key)) {
-			return "disable";
-		}
-	}
-	for (const key of lookupKeys) {
-		if (policy.sleepErrorCodeSet.has(key)) {
-			return "sleep";
-		}
-	}
-	return "retry";
+	return resolveProxyErrorDecision(policy, errorCode, errorMessage).action;
 }

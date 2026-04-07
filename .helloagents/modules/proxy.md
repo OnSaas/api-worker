@@ -36,18 +36,22 @@
 - 允许 `metadata_json.endpoint_overrides` 覆盖 chat/embedding/image 上游地址（可用 `{model}` 占位）
 - 允许 `metadata_json.header_override` 与 `metadata_json.query_override` 注入额外上游请求头/查询参数
 - Anthropic 默认注入 `anthropic-version=2023-06-01`，可通过 `header_override` 覆盖
-- 路由时优先使用模型能力表记录（测试成功的模型），无能力记录时回退渠道声明模型列表
+- 路由时优先使用模型能力表记录，并与渠道声明模型列表合并判定，候选筛选与真实上游模型解析必须保持一致
+- 当下游模型未命中渠道已知模型列表时，禁止自动回退到该渠道的首个已知模型；只有显式 `model_mapping` 才允许把下游模型改写为其他上游模型
 - 当模型在任意渠道中都不被支持时返回 `no_available_channels`，不回退到全部渠道
 - 上游失败/超时会记录到能力表并进入冷却期（需在窗口内连续失败达到阈值），冷却期内跳过对应渠道/模型
 - 失败计数仅在成功响应时清零
 - 仅 429/5xx/408/timeout/exception 计入冷却，4xx 请求错误不触发冷却
 - 映射模型场景失败时同时记录下游模型错误，确保冷却窗口生效
 - 上游成功响应会刷新能力表，清空错误并延长可用窗口
+- 站点内多调用令牌按“模型精确命中 > 未声明模型令牌 > 其他跳过”选择，并基于请求轨迹做稳定分摊，避免长期固定命中首个令牌
+- 站点验证写回调用令牌模型能力时仅保存各 token 自身探测成功的模型集合，不再把站点聚合模型广播给所有 token
 - 运行时配置优先读取 settings，环境变量仅回退
 - CPU 保护相关配置: `proxy_stream_usage_mode`, `proxy_stream_usage_max_parsers`, `proxy_usage_queue_enabled`
 - 队列策略配置: `usage_queue_daily_limit`, `usage_queue_direct_write_ratio`
 - 默认值: `PROXY_STREAM_USAGE_MODE=full`, `PROXY_STREAM_USAGE_MAX_PARSERS=0`, `PROXY_USAGE_QUEUE_ENABLED=true`
 - `PROXY_STREAM_USAGE_MAX_PARSERS` 设为 `0` 表示无限制
+- usage 错误元数据会附带 `normalized_error_code / policy_lookup_keys / policy_matched_key / policy_matched_set / policy_action`，用于解释自动禁用或未禁用的判定链路
 
 ## 依赖关系
 - `channels` / `tokens` / `usage_logs` 表

@@ -26,7 +26,6 @@ import { listCallTokens } from "../../../worker/src/services/channel-call-token-
 import {
 	type ChannelMetadata,
 	parseChannelMetadata,
-	resolveMappedModel,
 	resolveProvider,
 } from "../../../worker/src/services/channel-metadata";
 import {
@@ -37,8 +36,11 @@ import {
 import {
 	type ChannelRecord,
 	createWeightedOrder,
-	extractModels,
 } from "../../../worker/src/services/channels";
+import {
+	resolveUpstreamModelForChannel,
+	selectCandidateChannels,
+} from "../../../worker/src/services/channel-routing";
 import { adaptChatResponse } from "../../../worker/src/services/chat-response-adapter";
 import {
 	buildActiveChannelsKey,
@@ -52,7 +54,7 @@ import {
 import { shouldCooldown } from "../../../worker/src/services/model-cooldown";
 import {
 	buildProxyErrorCodeSet,
-	resolveProxyErrorAction,
+	resolveProxyErrorDecision,
 	type ProxyErrorAction,
 } from "../../../worker/src/services/proxy-error-policy";
 import {
@@ -1880,97 +1882,6 @@ async function extractErrorDetails(response: Response): Promise<{
 	};
 }
 
-function channelSupportsModel(
-	channel: ChannelRecord,
-	model: string | null,
-	verifiedModelsByChannel: Map<string, Set<string>>,
-): boolean {
-	if (!model) {
-		return true;
-	}
-	const verified = verifiedModelsByChannel.get(channel.id);
-	const declaredModels = extractModels(channel).map((entry) => entry.id);
-	const metadata = parseChannelMetadata(channel.metadata_json);
-	const mapped = resolveMappedModel(metadata.model_mapping, model);
-	const hasExplicitMapping = hasExplicitModelMapping(metadata, model);
-	const declaredAllows =
-		declaredModels.length > 0
-			? (mapped ? declaredModels.includes(mapped) : false) ||
-				declaredModels.includes(model)
-			: null;
-	const verifiedAllows =
-		verified && verified.size > 0
-			? (mapped ? verified.has(mapped) : false) || verified.has(model)
-			: null;
-	if (hasExplicitMapping) {
-		if (verified && verified.size > 0) {
-			return Boolean(verifiedAllows || declaredAllows);
-		}
-		if (declaredModels.length > 0) {
-			return Boolean(declaredAllows);
-		}
-		return true;
-	}
-	if (declaredModels.length > 0 && !declaredAllows) {
-		return false;
-	}
-	if (verified && verified.size > 0) {
-		return Boolean(verifiedAllows || declaredAllows);
-	}
-	if (declaredModels.length > 0) {
-		return true;
-	}
-	return false;
-}
-
-export function selectCandidateChannels(
-	allowedChannels: ChannelRecord[],
-	downstreamModel: string | null,
-	verifiedModelsByChannel: Map<string, Set<string>> = new Map(),
-): ChannelRecord[] {
-	const modelChannels = allowedChannels.filter((channel) =>
-		channelSupportsModel(channel, downstreamModel, verifiedModelsByChannel),
-	);
-	return modelChannels;
-}
-
-function hasExplicitModelMapping(
-	metadata: ChannelMetadata,
-	downstreamModel: string | null,
-): boolean {
-	if (downstreamModel) {
-		return (
-			metadata.model_mapping[downstreamModel] !== undefined ||
-			metadata.model_mapping["*"] !== undefined
-		);
-	}
-	return metadata.model_mapping["*"] !== undefined;
-}
-
-export function resolveUpstreamModelForChannel(
-	channel: ChannelRecord,
-	metadata: ChannelMetadata,
-	downstreamModel: string | null,
-	verifiedModelsByChannel: Map<string, Set<string>> = new Map(),
-): { model: string | null; autoMapped: boolean } {
-	const mapped = resolveMappedModel(metadata.model_mapping, downstreamModel);
-	if (!downstreamModel || hasExplicitModelMapping(metadata, downstreamModel)) {
-		return { model: mapped, autoMapped: false };
-	}
-
-	const verified = verifiedModelsByChannel.get(channel.id);
-	const declaredModels = verified
-		? Array.from(verified)
-		: extractModels(channel).map((entry) => entry.id);
-	if (declaredModels.length === 0) {
-		return { model: mapped, autoMapped: false };
-	}
-	if (declaredModels.includes(downstreamModel)) {
-		return { model: downstreamModel, autoMapped: false };
-	}
-	return { model: declaredModels[0] ?? mapped, autoMapped: true };
-}
-
 function filterAllowedChannels(
 	channels: ChannelRecord[],
 	tokenRecord: TokenRecord,
@@ -1994,15 +1905,47 @@ const normalizeTokenModels = (raw?: string | null): string[] | null => {
 	return parsed.map((item) => String(item));
 };
 
+function hashSelectionSeed(value: string): number {
+	let hash = 0;
+	for (let index = 0; index < value.length; index += 1) {
+		hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+	}
+	return hash;
+}
+
+function pickTokenBySelectionKey(
+	tokens: CallTokenItem[],
+	selectionKey: string | null | undefined,
+	selectionOffset = 0,
+): CallTokenItem | null {
+	if (tokens.length === 0) {
+		return null;
+	}
+	const safeOffset = Number.isFinite(selectionOffset)
+		? Math.max(0, Math.floor(selectionOffset))
+		: 0;
+	if (!selectionKey) {
+		return tokens[safeOffset % tokens.length] ?? tokens[0] ?? null;
+	}
+	const index =
+		(hashSelectionSeed(selectionKey) + safeOffset) % Math.max(1, tokens.length);
+	return tokens[index] ?? tokens[0] ?? null;
+}
+
 const selectTokenForModel = (
 	tokens: CallTokenItem[],
 	model: string | null,
+	selectionKey?: string | null,
+	selectionOffset = 0,
 ): { token: CallTokenItem | null; hasModelList: boolean } => {
 	if (tokens.length === 0) {
 		return { token: null, hasModelList: false };
 	}
 	if (!model) {
-		return { token: tokens[0], hasModelList: false };
+		return {
+			token: pickTokenBySelectionKey(tokens, selectionKey, selectionOffset),
+			hasModelList: false,
+		};
 	}
 	const tokensWithModels = tokens.map((token) => ({
 		token,
@@ -2010,10 +1953,38 @@ const selectTokenForModel = (
 	}));
 	const hasModelList = tokensWithModels.some((entry) => entry.models);
 	if (!hasModelList) {
-		return { token: tokens[0], hasModelList: false };
+		return {
+			token: pickTokenBySelectionKey(tokens, selectionKey, selectionOffset),
+			hasModelList: false,
+		};
 	}
-	const match = tokensWithModels.find((entry) => entry.models?.includes(model));
-	return { token: match?.token ?? null, hasModelList };
+	const matchedTokens = tokensWithModels
+		.filter((entry) => entry.models?.includes(model))
+		.map((entry) => entry.token);
+	if (matchedTokens.length > 0) {
+		return {
+			token: pickTokenBySelectionKey(
+				matchedTokens,
+				selectionKey,
+				selectionOffset,
+			),
+			hasModelList,
+		};
+	}
+	const unscopedTokens = tokensWithModels
+		.filter((entry) => !entry.models)
+		.map((entry) => entry.token);
+	if (unscopedTokens.length > 0) {
+		return {
+			token: pickTokenBySelectionKey(
+				unscopedTokens,
+				selectionKey,
+				selectionOffset,
+			),
+			hasModelList,
+		};
+	}
+	return { token: null, hasModelList };
 };
 
 function resolveChannelBaseUrl(channel: ChannelRecord): string {
@@ -3466,7 +3437,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 		errorCode: string | null,
 		errorMessage: string | null,
 	): ProxyErrorAction =>
-		resolveProxyErrorAction(
+		resolveProxyErrorDecision(
 			{
 				sleepErrorCodeSet: retrySleepErrorCodeSet,
 				disableErrorCodeSet: disableActionErrorCodeSet,
@@ -3474,7 +3445,36 @@ proxy.all("/*", tokenAuth, async (c) => {
 			},
 			errorCode,
 			errorMessage,
+		).action;
+	const resolveFailureWithMeta = (options: {
+		errorCode: string | null;
+		errorMessage: string | null;
+		errorMetaJson?: string | null;
+		overrideAction?: ProxyErrorAction | null;
+	}): { action: ProxyErrorAction; errorMetaJson: string | null } => {
+		const decision = resolveProxyErrorDecision(
+			{
+				sleepErrorCodeSet: retrySleepErrorCodeSet,
+				disableErrorCodeSet: disableActionErrorCodeSet,
+				returnErrorCodeSet: retryReturnErrorCodeSet,
+			},
+			options.errorCode,
+			options.errorMessage,
 		);
+		const action = options.overrideAction ?? decision.action;
+		return {
+			action,
+			errorMetaJson: mergeErrorMetaJson(options.errorMetaJson, {
+				normalized_error_code: decision.normalizedErrorCode,
+				policy_action: action,
+				policy_resolved_action: decision.action,
+				policy_lookup_keys: decision.lookupKeys,
+				policy_matched_key: decision.matchedKey,
+				policy_matched_set: decision.matchedSet,
+				policy_action_source: options.overrideAction ? "override" : "policy",
+			}),
+		};
+	};
 	const applyDisableAction = async (options: {
 		channelId: string;
 		errorCode: string;
@@ -3641,6 +3641,9 @@ proxy.all("/*", tokenAuth, async (c) => {
 				verifiedModelsByChannel,
 			);
 			const upstreamModel = resolvedModel.model;
+			if (!upstreamModel && downstreamModel) {
+				continue;
+			}
 			const recordModel = upstreamModel ?? downstreamModel;
 			if (
 				upstreamProvider === "gemini" &&
@@ -3651,7 +3654,11 @@ proxy.all("/*", tokenAuth, async (c) => {
 			}
 			const baseUrl = resolveChannelBaseUrl(channel);
 			const tokens = callTokenMap.get(channel.id) ?? [];
-			const selection = selectTokenForModel(tokens, recordModel);
+			const selection = selectTokenForModel(
+				tokens,
+				recordModel,
+				`${traceId}:${channel.id}:${recordModel ?? "*"}`,
+			);
 			if (!selection.token && selection.hasModelList && recordModel) {
 				continue;
 			}
@@ -3983,11 +3990,16 @@ proxy.all("/*", tokenAuth, async (c) => {
 								? await detectAbnormalStreamSuccessResponse(response)
 								: null);
 						if (abnormalResponse) {
+							const failureDecision = resolveFailureWithMeta({
+								errorCode: abnormalResponse.errorCode,
+								errorMessage: abnormalResponse.errorMessage,
+								errorMetaJson: abnormalResponse.errorMetaJson,
+							});
 							lastErrorDetails = {
 								upstreamStatus: response.status,
 								errorCode: abnormalResponse.errorCode,
 								errorMessage: abnormalResponse.errorMessage,
-								errorMetaJson: abnormalResponse.errorMetaJson,
+								errorMetaJson: failureDecision.errorMetaJson,
 							};
 							recordAttemptUsage({
 								channelId: meta.channel.id,
@@ -4002,7 +4014,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 								failureStage: "upstream_response",
 								failureReason: abnormalResponse.errorCode,
 								usageSource: "none",
-								errorMetaJson: abnormalResponse.errorMetaJson,
+								errorMetaJson: failureDecision.errorMetaJson,
 							});
 							recordAttemptLog({
 								attemptIndex: attemptNumber,
@@ -4042,10 +4054,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 									errorMessage: abnormalResponse.errorMessage,
 								});
 							}
-							const action = resolveFailureAction(
-								abnormalResponse.errorCode,
-								abnormalResponse.errorMessage,
-							);
+							const action = failureDecision.action;
 							if (action === "return") {
 								return buildDirectErrorResponse(
 									response.status,
@@ -4074,10 +4083,15 @@ proxy.all("/*", tokenAuth, async (c) => {
 									? "usage_missing.non_stream.signal_present_unparseable"
 									: "usage_missing.non_stream.signal_absent";
 								const usageMissingMessage = `usage_missing: ${usageMissingCode}`;
+								const failureDecision = resolveFailureWithMeta({
+									errorCode: usageMissingCode,
+									errorMessage: usageMissingMessage,
+								});
 								lastErrorDetails = {
 									upstreamStatus: response.status,
 									errorCode: usageMissingCode,
 									errorMessage: usageMissingMessage,
+									errorMetaJson: failureDecision.errorMetaJson,
 								};
 								recordAttemptUsage({
 									channelId: meta.channel.id,
@@ -4092,6 +4106,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 									failureStage: "usage_finalize",
 									failureReason: usageMissingCode,
 									usageSource: immediateUsageSource,
+									errorMetaJson: failureDecision.errorMetaJson,
 								});
 								recordAttemptLog({
 									attemptIndex: attemptNumber,
@@ -4115,10 +4130,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 									errorMessage: usageMissingMessage,
 									latencyMs: attemptLatencyMs,
 								});
-								const action = resolveFailureAction(
-									usageMissingCode,
-									usageMissingMessage,
-								);
+								const action = failureDecision.action;
 								if (action === "return") {
 									return buildDirectErrorResponse(
 										response.status,
@@ -4143,10 +4155,15 @@ proxy.all("/*", tokenAuth, async (c) => {
 								})
 							) {
 								const zeroCompletionMessage = `${USAGE_ZERO_COMPLETION_TOKENS_ERROR_CODE}: completion_tokens=${immediateUsage?.completionTokens ?? 0}`;
+								const failureDecision = resolveFailureWithMeta({
+									errorCode: USAGE_ZERO_COMPLETION_TOKENS_ERROR_CODE,
+									errorMessage: zeroCompletionMessage,
+								});
 								lastErrorDetails = {
 									upstreamStatus: response.status,
 									errorCode: USAGE_ZERO_COMPLETION_TOKENS_ERROR_CODE,
 									errorMessage: zeroCompletionMessage,
+									errorMetaJson: failureDecision.errorMetaJson,
 								};
 								recordAttemptUsage({
 									channelId: meta.channel.id,
@@ -4161,6 +4178,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 									failureStage: "usage_finalize",
 									failureReason: USAGE_ZERO_COMPLETION_TOKENS_ERROR_CODE,
 									usageSource: immediateUsageSource,
+									errorMetaJson: failureDecision.errorMetaJson,
 								});
 								recordAttemptLog({
 									attemptIndex: attemptNumber,
@@ -4184,10 +4202,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 									errorMessage: zeroCompletionMessage,
 									latencyMs: attemptLatencyMs,
 								});
-								const action = resolveFailureAction(
-									USAGE_ZERO_COMPLETION_TOKENS_ERROR_CODE,
-									zeroCompletionMessage,
-								);
+								const action = failureDecision.action;
 								if (action === "return") {
 									return buildDirectErrorResponse(
 										response.status,
@@ -4297,11 +4312,20 @@ proxy.all("/*", tokenAuth, async (c) => {
 							: streamOptionsUnsupported
 								? "stream_options_unsupported"
 								: normalizedErrorCode;
+						const failureDecision = resolveFailureWithMeta({
+							errorCode: finalErrorCode,
+							errorMessage: normalizedErrorMessage,
+							errorMetaJson,
+							overrideAction:
+								dispatchResult.errorAction !== "retry"
+									? dispatchResult.errorAction
+									: null,
+						});
 						lastErrorDetails = {
 							upstreamStatus: response.status,
 							errorCode: finalErrorCode,
 							errorMessage: normalizedErrorMessage,
-							errorMetaJson,
+							errorMetaJson: failureDecision.errorMetaJson,
 						};
 						recordAttemptUsage({
 							channelId: meta.channel.id,
@@ -4316,7 +4340,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 							failureStage: "upstream_response",
 							failureReason: finalErrorCode,
 							usageSource: failureUsage.usageSource,
-							errorMetaJson,
+							errorMetaJson: failureDecision.errorMetaJson,
 						});
 						recordAttemptLog({
 							attemptIndex: attemptNumber,
@@ -4360,10 +4384,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 								errorMessage: normalizedErrorMessage,
 							});
 						}
-						const action =
-							dispatchResult.errorAction !== "retry"
-								? dispatchResult.errorAction
-								: resolveFailureAction(finalErrorCode, normalizedErrorMessage);
+						const action = failureDecision.action;
 						if (action === "return") {
 							return buildDirectErrorResponse(response.status, finalErrorCode);
 						}
@@ -4402,6 +4423,9 @@ proxy.all("/*", tokenAuth, async (c) => {
 				verifiedModelsByChannel,
 			);
 			const upstreamModel = resolvedModel.model;
+			if (!upstreamModel && downstreamModel) {
+				continue;
+			}
 			const recordModel = upstreamModel ?? downstreamModel;
 			if (
 				upstreamProvider === "gemini" &&
@@ -4413,7 +4437,12 @@ proxy.all("/*", tokenAuth, async (c) => {
 
 			const baseUrl = resolveChannelBaseUrl(channel);
 			const tokens = callTokenMap.get(channel.id) ?? [];
-			const selection = selectTokenForModel(tokens, recordModel);
+			const selection = selectTokenForModel(
+				tokens,
+				recordModel,
+				`${traceId}:${channel.id}:${recordModel ?? "*"}`,
+				attemptNumber - 1,
+			);
 			if (!selection.token && selection.hasModelList && recordModel) {
 				continue;
 			}
@@ -4625,6 +4654,12 @@ proxy.all("/*", tokenAuth, async (c) => {
 						errorMessage: attemptResult.errorMessage,
 						errorMetaJson,
 					};
+					const failureDecision = resolveFailureWithMeta({
+						errorCode: attemptResult.errorCode,
+						errorMessage: attemptResult.errorMessage,
+						errorMetaJson,
+					});
+					lastErrorDetails.errorMetaJson = failureDecision.errorMetaJson;
 					recordAttemptUsage({
 						channelId: channel.id,
 						requestPath: upstreamRequestPath,
@@ -4638,7 +4673,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 						failureStage: "attempt_call",
 						failureReason: attemptResult.errorCode,
 						usageSource: "none",
-						errorMetaJson: lastErrorDetails.errorMetaJson ?? null,
+						errorMetaJson: failureDecision.errorMetaJson,
 					});
 					recordAttemptLog({
 						attemptIndex: attemptNumber,
@@ -4670,10 +4705,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 						errorMessage: attemptResult.errorMessage,
 						latencyMs: attemptResult.latencyMs,
 					});
-					const action = resolveFailureAction(
-						attemptResult.errorCode,
-						attemptResult.errorMessage,
-					);
+					const action = failureDecision.action;
 					if (action === "return") {
 						return buildDirectErrorResponse(
 							attemptResult.kind === "attempt_worker_error"
@@ -4747,6 +4779,12 @@ proxy.all("/*", tokenAuth, async (c) => {
 								errorMessage: retried.errorMessage,
 								errorMetaJson,
 							};
+							const failureDecision = resolveFailureWithMeta({
+								errorCode: retried.errorCode,
+								errorMessage: retried.errorMessage,
+								errorMetaJson,
+							});
+							lastErrorDetails.errorMetaJson = failureDecision.errorMetaJson;
 							recordAttemptUsage({
 								channelId: channel.id,
 								requestPath: upstreamRequestPath,
@@ -4760,7 +4798,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 								failureStage: "attempt_call",
 								failureReason: retried.errorCode,
 								usageSource: "none",
-								errorMetaJson: lastErrorDetails.errorMetaJson ?? null,
+								errorMetaJson: failureDecision.errorMetaJson,
 							});
 							recordAttemptLog({
 								attemptIndex: attemptNumber,
@@ -4792,10 +4830,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 								errorMessage: retried.errorMessage,
 								latencyMs: retried.latencyMs,
 							});
-							const action = resolveFailureAction(
-								retried.errorCode,
-								retried.errorMessage,
-							);
+							const action = failureDecision.action;
 							if (action === "return") {
 								return buildDirectErrorResponse(
 									retried.kind === "attempt_worker_error"
@@ -4900,11 +4935,16 @@ proxy.all("/*", tokenAuth, async (c) => {
 							? await detectAbnormalStreamSuccessResponse(response)
 							: null);
 					if (abnormalResponse) {
+						const failureDecision = resolveFailureWithMeta({
+							errorCode: abnormalResponse.errorCode,
+							errorMessage: abnormalResponse.errorMessage,
+							errorMetaJson: abnormalResponse.errorMetaJson,
+						});
 						lastErrorDetails = {
 							upstreamStatus: response.status,
 							errorCode: abnormalResponse.errorCode,
 							errorMessage: abnormalResponse.errorMessage,
-							errorMetaJson: abnormalResponse.errorMetaJson,
+							errorMetaJson: failureDecision.errorMetaJson,
 						};
 						recordAttemptUsage({
 							channelId: channel.id,
@@ -4919,7 +4959,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 							failureStage: "upstream_response",
 							failureReason: abnormalResponse.errorCode,
 							usageSource: "none",
-							errorMetaJson: abnormalResponse.errorMetaJson,
+							errorMetaJson: failureDecision.errorMetaJson,
 						});
 						recordAttemptLog({
 							attemptIndex: attemptNumber,
@@ -4959,10 +4999,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 								errorMessage: abnormalResponse.errorMessage,
 							});
 						}
-						const action = resolveFailureAction(
-							abnormalResponse.errorCode,
-							abnormalResponse.errorMessage,
-						);
+						const action = failureDecision.action;
 						if (action === "return") {
 							return buildDirectErrorResponse(
 								response.status,
@@ -4993,10 +5030,15 @@ proxy.all("/*", tokenAuth, async (c) => {
 							? "usage_missing.non_stream.signal_present_unparseable"
 							: "usage_missing.non_stream.signal_absent";
 						const usageMissingMessage = `usage_missing: ${usageMissingCode}`;
+						const failureDecision = resolveFailureWithMeta({
+							errorCode: usageMissingCode,
+							errorMessage: usageMissingMessage,
+						});
 						lastErrorDetails = {
 							upstreamStatus: response.status,
 							errorCode: usageMissingCode,
 							errorMessage: usageMissingMessage,
+							errorMetaJson: failureDecision.errorMetaJson,
 						};
 						recordAttemptUsage({
 							channelId: channel.id,
@@ -5011,6 +5053,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 							failureStage: "usage_finalize",
 							failureReason: usageMissingCode,
 							usageSource: immediateUsageSource,
+							errorMetaJson: failureDecision.errorMetaJson,
 						});
 						recordAttemptLog({
 							attemptIndex: attemptNumber,
@@ -5034,10 +5077,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 							errorMessage: usageMissingMessage,
 							latencyMs: attemptLatencyMs,
 						});
-						const action = resolveFailureAction(
-							usageMissingCode,
-							usageMissingMessage,
-						);
+						const action = failureDecision.action;
 						if (action === "return") {
 							return buildDirectErrorResponse(
 								response.status,
@@ -5064,10 +5104,15 @@ proxy.all("/*", tokenAuth, async (c) => {
 						})
 					) {
 						const zeroCompletionMessage = `${USAGE_ZERO_COMPLETION_TOKENS_ERROR_CODE}: completion_tokens=${immediateUsage?.completionTokens ?? 0}`;
+						const failureDecision = resolveFailureWithMeta({
+							errorCode: USAGE_ZERO_COMPLETION_TOKENS_ERROR_CODE,
+							errorMessage: zeroCompletionMessage,
+						});
 						lastErrorDetails = {
 							upstreamStatus: response.status,
 							errorCode: USAGE_ZERO_COMPLETION_TOKENS_ERROR_CODE,
 							errorMessage: zeroCompletionMessage,
+							errorMetaJson: failureDecision.errorMetaJson,
 						};
 						recordAttemptUsage({
 							channelId: channel.id,
@@ -5082,6 +5127,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 							failureStage: "usage_finalize",
 							failureReason: USAGE_ZERO_COMPLETION_TOKENS_ERROR_CODE,
 							usageSource: immediateUsageSource,
+							errorMetaJson: failureDecision.errorMetaJson,
 						});
 						recordAttemptLog({
 							attemptIndex: attemptNumber,
@@ -5105,10 +5151,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 							errorMessage: zeroCompletionMessage,
 							latencyMs: attemptLatencyMs,
 						});
-						const action = resolveFailureAction(
-							USAGE_ZERO_COMPLETION_TOKENS_ERROR_CODE,
-							zeroCompletionMessage,
-						);
+						const action = failureDecision.action;
 						if (action === "return") {
 							return buildDirectErrorResponse(
 								response.status,
@@ -5220,11 +5263,16 @@ proxy.all("/*", tokenAuth, async (c) => {
 					: streamOptionsUnsupported
 						? "stream_options_unsupported"
 						: normalizedErrorCode;
+				const failureDecision = resolveFailureWithMeta({
+					errorCode: finalErrorCode,
+					errorMessage: normalizedErrorMessage,
+					errorMetaJson,
+				});
 				lastErrorDetails = {
 					upstreamStatus: response.status,
 					errorCode: finalErrorCode,
 					errorMessage: normalizedErrorMessage,
-					errorMetaJson,
+					errorMetaJson: failureDecision.errorMetaJson,
 				};
 				recordAttemptUsage({
 					channelId: channel.id,
@@ -5239,7 +5287,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 					failureStage: "upstream_response",
 					failureReason: finalErrorCode,
 					usageSource: failureUsage.usageSource,
-					errorMetaJson,
+					errorMetaJson: failureDecision.errorMetaJson,
 				});
 				recordAttemptLog({
 					attemptIndex: attemptNumber,
@@ -5284,10 +5332,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 						errorMessage: normalizedErrorMessage,
 					});
 				}
-				const action = resolveFailureAction(
-					finalErrorCode,
-					normalizedErrorMessage,
-				);
+				const action = failureDecision.action;
 				if (action === "return") {
 					return buildDirectErrorResponse(response.status, finalErrorCode);
 				}
@@ -5318,14 +5363,19 @@ proxy.all("/*", tokenAuth, async (c) => {
 					usageErrorMessageMaxLength,
 				);
 				const attemptLatencyMs = Date.now() - attemptStart;
-				lastErrorDetails = {
-					upstreamStatus: null,
+				const failureDecision = resolveFailureWithMeta({
 					errorCode: usageErrorCode,
 					errorMessage: usageErrorMessage,
 					errorMetaJson: JSON.stringify({
 						type: "fetch_exception",
 						reason: isTimeout ? "timeout" : "exception",
 					}),
+				});
+				lastErrorDetails = {
+					upstreamStatus: null,
+					errorCode: usageErrorCode,
+					errorMessage: usageErrorMessage,
+					errorMetaJson: failureDecision.errorMetaJson,
 				};
 				recordAttemptUsage({
 					channelId: channel.id,
@@ -5340,7 +5390,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 					failureStage: "upstream_call",
 					failureReason: usageErrorCode,
 					usageSource: "none",
-					errorMetaJson: lastErrorDetails.errorMetaJson ?? null,
+					errorMetaJson: failureDecision.errorMetaJson,
 				});
 				recordAttemptLog({
 					attemptIndex: attemptNumber,
@@ -5380,7 +5430,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 						errorMessage: usageErrorMessage,
 					});
 				}
-				const action = resolveFailureAction(usageErrorCode, usageErrorMessage);
+				const action = failureDecision.action;
 				if (action === "return") {
 					return buildDirectErrorResponse(
 						isTimeout ? 504 : 502,
