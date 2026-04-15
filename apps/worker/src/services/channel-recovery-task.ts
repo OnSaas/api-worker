@@ -2,8 +2,13 @@ import {
 	testChannelTokens,
 	type ChannelTokenTestSummary,
 } from "./channel-testing";
-import type { SiteTaskProbeChannel, SiteTaskProbeResult, SiteTaskToken } from "./site-task-contract";
+import type {
+	SiteTaskProbeChannel,
+	SiteTaskProbeResult,
+	SiteTaskToken,
+} from "./site-task-contract";
 import { normalizeBaseUrl } from "../utils/url";
+import { inspectSuccessfulResponse } from "./successful-response";
 
 const RECOVERY_PROBE_PROMPT = "Reply with a short health-check message.";
 const RECOVERY_PROBE_MAX_TOKENS = 32;
@@ -18,54 +23,6 @@ export function pickRandomItem<T>(
 	const index = Math.floor(random() * items.length);
 	const safeIndex = Math.max(0, Math.min(items.length - 1, index));
 	return items[safeIndex] ?? null;
-}
-
-export function extractProbeText(payload: unknown): string {
-	if (!payload || typeof payload !== "object") {
-		return "";
-	}
-	const record = payload as Record<string, unknown>;
-	if (typeof record.output_text === "string") {
-		return record.output_text.trim();
-	}
-	const choices = record.choices;
-	if (!Array.isArray(choices) || choices.length === 0) {
-		return "";
-	}
-	const firstChoice =
-		choices[0] && typeof choices[0] === "object"
-			? (choices[0] as Record<string, unknown>)
-			: null;
-	if (!firstChoice) {
-		return "";
-	}
-	if (typeof firstChoice.text === "string") {
-		return firstChoice.text.trim();
-	}
-	const message =
-		firstChoice.message && typeof firstChoice.message === "object"
-			? (firstChoice.message as Record<string, unknown>)
-			: null;
-	if (!message) {
-		return "";
-	}
-	const content = message.content;
-	if (typeof content === "string") {
-		return content.trim();
-	}
-	if (!Array.isArray(content)) {
-		return "";
-	}
-	for (const item of content) {
-		if (!item || typeof item !== "object") {
-			continue;
-		}
-		const textValue = (item as Record<string, unknown>).text;
-		if (typeof textValue === "string" && textValue.trim().length > 0) {
-			return textValue.trim();
-		}
-	}
-	return "";
 }
 
 async function sendCompletionProbe(options: {
@@ -98,8 +55,10 @@ async function sendCompletionProbe(options: {
 	if (!response.ok) {
 		return false;
 	}
-	const payload = await response.json().catch(() => null);
-	return extractProbeText(payload).length > 0;
+	const inspection = await inspectSuccessfulResponse(response, {
+		requireOutputText: true,
+	});
+	return inspection.ok;
 }
 
 function buildProbeTokens(

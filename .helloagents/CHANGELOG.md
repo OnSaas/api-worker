@@ -22,6 +22,10 @@
 
 ### 修复
 
+- **[proxy/sites/usage]**: 收紧成功判定与恢复探针语义；`200` 的 HTML 假成功站点不再被恢复，客户端未收包时使用日志改记 `client_disconnected`，非流式缺失 usage 也不再默认为绿色成功 — by lsy
+  - 方案: [202604151107_fix-proxy-false-success-and-site-recovery](plan/202604151107_fix-proxy-false-success-and-site-recovery/)
+  - 决策: fix-proxy-false-success-and-site-recovery#D001(统一成功真实性判定并复用于站点验证), fix-proxy-false-success-and-site-recovery#D002(客户端未收包单独记为 client_disconnected)
+
 - **[worker/proxy]**: 补齐普通单次 attempt 路径的取消传播；本地 dev 默认走 `LOCAL_ATTEMPT_WORKER_URL` 时，direct/local_http/binding 三条调用链都会在客户端断链后停止继续重试 — by lsy
   - 方案: [202604091222_stop-local-dev-retry-after-client-disconnect](archive/2026-04/202604091222_stop-local-dev-retry-after-client-disconnect/)
   - 决策: stop-local-dev-retry-after-client-disconnect#D001(先补齐普通 attempt 取消传播，不直接改 dev transport 默认值)

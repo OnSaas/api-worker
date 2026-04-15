@@ -3465,15 +3465,64 @@ proxy.all("/*", tokenAuth, async (c) => {
 	let selectedUpstreamModel: string | null = null;
 	let selectedRequestPath = targetPath;
 	let selectedImmediateUsage: NormalizedUsage | null = null;
+	let selectedImmediateUsageSource: "json" | "header" | "none" = "none";
 	let selectedParsedStreamUsage: StreamUsage | null = null;
 	let selectedHasUsageHeaders = false;
 	let selectedAttemptIndex: number | null = null;
 	let selectedAttemptStartedAt: string | null = null;
 	let selectedAttemptLatencyMs: number | null = null;
 	let selectedAttemptUpstreamRequestId: string | null = null;
+	let selectedClientDisconnectRecorded = false;
 	let lastErrorDetails: ErrorDetails | null = null;
 	let attemptsExecuted = 0;
 	const blockedChannelIds = new Set<string>();
+	const recordSelectedClientDisconnect = () => {
+		if (
+			selectedClientDisconnectRecorded ||
+			!selectedResponse ||
+			!selectedChannel
+		) {
+			return;
+		}
+		selectedClientDisconnectRecorded = true;
+		const latencyMs = Date.now() - requestStart;
+		recordAttemptUsage({
+			channelId: selectedChannel.id,
+			requestPath: selectedRequestPath,
+			latencyMs,
+			firstTokenLatencyMs: isStream
+				? null
+				: (selectedAttemptLatencyMs ?? latencyMs),
+			usage: selectedImmediateUsage,
+			status: "warn",
+			upstreamStatus: selectedResponse.status,
+			errorCode: DOWNSTREAM_CLIENT_ABORT_ERROR_CODE,
+			errorMessage: DOWNSTREAM_CLIENT_ABORT_ERROR_CODE,
+			failureStage: "downstream_response",
+			failureReason: DOWNSTREAM_CLIENT_ABORT_ERROR_CODE,
+			usageSource: selectedImmediateUsageSource,
+		});
+		if (
+			selectedAttemptIndex !== null &&
+			selectedAttemptStartedAt &&
+			selectedAttemptLatencyMs !== null
+		) {
+			recordAttemptLog({
+				attemptIndex: selectedAttemptIndex,
+				channelId: selectedChannel.id,
+				provider: selectedUpstreamProvider,
+				model: selectedUpstreamModel ?? downstreamModel,
+				status: "warn",
+				errorClass: "downstream_response",
+				errorCode: DOWNSTREAM_CLIENT_ABORT_ERROR_CODE,
+				httpStatus: selectedResponse.status,
+				latencyMs: selectedAttemptLatencyMs,
+				upstreamRequestId: selectedAttemptUpstreamRequestId,
+				startedAt: selectedAttemptStartedAt,
+				endedAt: new Date().toISOString(),
+			});
+		}
+	};
 	const parseStreamUsageOnFailure = async (response: Response) => {
 		if (
 			!isStream ||
@@ -4301,19 +4350,6 @@ proxy.all("/*", tokenAuth, async (c) => {
 									dispatchStopRetry = true;
 								}
 							} else {
-								if (!isStream) {
-									recordAttemptUsage({
-										channelId: meta.channel.id,
-										requestPath: responsePath,
-										latencyMs: attemptLatencyMs,
-										firstTokenLatencyMs: attemptLatencyMs,
-										usage: immediateUsage,
-										status: "ok",
-										upstreamStatus: response.status,
-										failureStage: "usage_finalize",
-										usageSource: immediateUsageSource,
-									});
-								}
 								recordAttemptLog({
 									attemptIndex: attemptNumber,
 									channelId: meta.channel.id,
@@ -4340,6 +4376,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 								selectedResponse = response;
 								selectedRequestPath = responsePath;
 								selectedImmediateUsage = immediateUsage;
+								selectedImmediateUsageSource = immediateUsageSource;
 								selectedParsedStreamUsage = parsedSuccessStreamUsage;
 								selectedHasUsageHeaders = hasUsageHeaderSignal;
 								selectedAttemptIndex = attemptNumber;
@@ -4481,6 +4518,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 		}
 	}
 	if (downstreamSignal.aborted) {
+		recordSelectedClientDisconnect();
 		return downstreamAbortResponse();
 	}
 	if (dispatchHandled && !selectedResponse && !dispatchStopRetry) {
@@ -5254,19 +5292,6 @@ proxy.all("/*", tokenAuth, async (c) => {
 						continue;
 					}
 
-					if (!isStream) {
-						recordAttemptUsage({
-							channelId: channel.id,
-							requestPath: responsePath,
-							latencyMs: attemptLatencyMs,
-							firstTokenLatencyMs: attemptLatencyMs,
-							usage: immediateUsage,
-							status: "ok",
-							upstreamStatus: response.status,
-							failureStage: "usage_finalize",
-							usageSource: immediateUsageSource,
-						});
-					}
 					recordAttemptLog({
 						attemptIndex: attemptNumber,
 						channelId: channel.id,
@@ -5293,6 +5318,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 					selectedResponse = response;
 					selectedRequestPath = responsePath;
 					selectedImmediateUsage = immediateUsage;
+					selectedImmediateUsageSource = immediateUsageSource;
 					selectedParsedStreamUsage = parsedSuccessStreamUsage;
 					selectedHasUsageHeaders = hasUsageHeaderSignal;
 					selectedAttemptIndex = attemptNumber;
@@ -5537,6 +5563,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 		}
 	}
 	if (downstreamSignal.aborted) {
+		recordSelectedClientDisconnect();
 		return downstreamAbortResponse();
 	}
 
@@ -5617,6 +5644,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 			"upstream_unavailable",
 		);
 	}
+	let responseToReturn = selectedResponse;
 
 	if (selectedChannel && isStream) {
 		const selectedLatencyMs = Date.now() - requestStart;
@@ -5855,7 +5883,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 				isStream,
 			});
 			if (transformed !== selectedResponse) {
-				return withTraceHeader(transformed);
+				responseToReturn = transformed;
 			}
 		} catch (error) {
 			console.error("proxy_response_adapt_failed", {
@@ -5871,9 +5899,27 @@ proxy.all("/*", tokenAuth, async (c) => {
 			);
 		}
 	}
+	if (downstreamSignal.aborted) {
+		recordSelectedClientDisconnect();
+		return downstreamAbortResponse();
+	}
+	if (selectedChannel && !isStream) {
+		const selectedLatencyMs = Date.now() - requestStart;
+		recordAttemptUsage({
+			channelId: selectedChannel.id,
+			requestPath: selectedRequestPath,
+			latencyMs: selectedLatencyMs,
+			firstTokenLatencyMs: selectedAttemptLatencyMs ?? selectedLatencyMs,
+			usage: selectedImmediateUsage,
+			status: "ok",
+			upstreamStatus: selectedResponse.status,
+			failureStage: "usage_finalize",
+			usageSource: selectedImmediateUsageSource,
+		});
+	}
 
 	responseAttemptCount = attemptsExecuted;
-	return withTraceHeader(selectedResponse);
+	return withTraceHeader(responseToReturn);
 });
 
 export default proxy;

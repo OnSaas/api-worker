@@ -42,9 +42,6 @@ export function shouldTreatMissingUsageAsError(
 	if (input.bodyParsingSkipped) {
 		return false;
 	}
-	if (!input.hasUsageSignal) {
-		return false;
-	}
 	return true;
 }
 

@@ -5,6 +5,7 @@ import { listCallTokens } from "./channel-call-token-repo";
 import { modelsToJson } from "./channel-models";
 import { listChannels } from "./channel-repo";
 import { fetchChannelModels, updateChannelTestResult } from "./channel-testing";
+import { inspectSuccessfulResponse } from "./successful-response";
 
 const RECOVERY_PROBE_PROMPT = "Reply with a short health-check message.";
 const RECOVERY_PROBE_MAX_TOKENS = 32;
@@ -79,63 +80,6 @@ function shuffleItems<T>(
 	return cloned;
 }
 
-/**
- * Extracts text output from a chat completion style payload.
- *
- * Args:
- *   payload: Upstream JSON payload.
- *
- * Returns:
- *   Trimmed text content; empty string when missing.
- */
-export function extractProbeText(payload: unknown): string {
-	if (!payload || typeof payload !== "object") {
-		return "";
-	}
-	const record = payload as Record<string, unknown>;
-	if (typeof record.output_text === "string") {
-		return record.output_text.trim();
-	}
-	const choices = record.choices;
-	if (!Array.isArray(choices) || choices.length === 0) {
-		return "";
-	}
-	const firstChoice =
-		choices[0] && typeof choices[0] === "object"
-			? (choices[0] as Record<string, unknown>)
-			: null;
-	if (!firstChoice) {
-		return "";
-	}
-	if (typeof firstChoice.text === "string") {
-		return firstChoice.text.trim();
-	}
-	const message =
-		firstChoice.message && typeof firstChoice.message === "object"
-			? (firstChoice.message as Record<string, unknown>)
-			: null;
-	if (!message) {
-		return "";
-	}
-	const content = message.content;
-	if (typeof content === "string") {
-		return content.trim();
-	}
-	if (!Array.isArray(content)) {
-		return "";
-	}
-	for (const item of content) {
-		if (!item || typeof item !== "object") {
-			continue;
-		}
-		const textValue = (item as Record<string, unknown>).text;
-		if (typeof textValue === "string" && textValue.trim().length > 0) {
-			return textValue.trim();
-		}
-	}
-	return "";
-}
-
 async function sendCompletionProbe(options: {
 	baseUrl: string;
 	apiKey: string;
@@ -166,8 +110,10 @@ async function sendCompletionProbe(options: {
 	if (!response.ok) {
 		return false;
 	}
-	const payload = await response.json().catch(() => null);
-	return extractProbeText(payload).length > 0;
+	const inspection = await inspectSuccessfulResponse(response, {
+		requireOutputText: true,
+	});
+	return inspection.ok;
 }
 
 async function recoverDisabledChannel(

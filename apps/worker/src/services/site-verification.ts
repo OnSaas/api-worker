@@ -7,6 +7,7 @@ import { updateCallTokenModels } from "./channel-call-token-repo";
 import { extractModelIds, modelsToJson } from "./channel-models";
 import { parseChannelMetadata, resolveProvider } from "./channel-metadata";
 import { collectVerifiedTokenModelUpdates } from "./site-verification-token-models";
+import { inspectSuccessfulResponse } from "./successful-response";
 import {
 	type ChannelTokenTestItem,
 	updateChannelTestResult,
@@ -807,15 +808,20 @@ export async function verifySiteChannel(options: {
 			headers,
 			body: JSON.stringify(request.body),
 		});
+		const successInspection = response.ok
+			? await inspectSuccessfulResponse(response)
+			: null;
 		const detail = response.ok
-			? "service_request_succeeded"
+			? (successInspection?.message ?? "service_request_succeeded")
 			: await readVerificationFailureDetail(response);
 		trace = {
 			latency_ms: Date.now() - startedAt,
 			upstream_status: response.status,
-			detail_code: response.ok ? "service_request_succeeded" : undefined,
+			detail_code: response.ok
+				? (successInspection?.code ?? "service_request_succeeded")
+				: undefined,
 			detail_message: response.ok
-				? "service_request_succeeded"
+				? (successInspection?.message ?? "service_request_succeeded")
 				: (summarizeVerificationDetail(
 						[`HTTP ${response.status}`, detail, `POST ${targetPath}`]
 							.filter(Boolean)
@@ -841,6 +847,17 @@ export async function verifySiteChannel(options: {
 			service.code = failure.code;
 			service.message = failure.message;
 			trace.detail_code = failure.code;
+		} else if (!successInspection?.ok) {
+			connectivity.status = "pass";
+			connectivity.code = "reachable";
+			connectivity.message = "站点可达，但成功响应内容不符合真实服务返回特征。";
+			service.status = "fail";
+			service.code = successInspection?.code ?? "abnormal_success_response";
+			service.message =
+				successInspection?.code === "html_success_page"
+					? "上游返回了 HTML 页面，当前站点更像是关停页或落地页，而非真实 API。"
+					: "站点返回了异常的 200 成功响应，未通过真实服务验证。";
+			trace.detail_code = service.code;
 		} else {
 			connectivity.status = "pass";
 			connectivity.code = "reachable";
