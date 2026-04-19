@@ -439,6 +439,16 @@ export async function upsertChannelModelCapabilities(
 		stmt.bind(channelId, model, nowSeconds, timestamp, timestamp),
 	);
 	await db.batch(statements);
+
+	// Clean up stale models that are no longer supported by the upstream channel
+	const placeholders = models.map(() => "?").join(", ");
+	await db
+		.prepare(
+			`DELETE FROM channel_model_capabilities WHERE channel_id = ? AND model NOT IN (${placeholders})`,
+		)
+		.bind(channelId, ...models)
+		.run();
+
 	await db
 		.prepare(
 			"UPDATE channels SET auto_disable_hit_count = 0, auto_disabled_until = NULL, auto_disabled_reason_code = NULL, auto_disabled_permanent = 0, updated_at = ? WHERE id = ? AND status = ?",
