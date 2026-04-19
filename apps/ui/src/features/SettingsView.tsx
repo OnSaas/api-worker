@@ -480,7 +480,7 @@ export const SettingsView = ({
 									class="app-settings-row__label"
 									for="proxy-upstream-timeout"
 								>
-									上游超时（毫秒）
+									上游超时（秒）
 								</label>
 								<p class="app-settings-row__hint">设置为 0 表示不限制超时</p>
 							</div>
@@ -490,11 +490,16 @@ export const SettingsView = ({
 								name="proxy_upstream_timeout_ms"
 								type="number"
 								min="0"
-								value={settingsForm.proxy_upstream_timeout_ms}
+								value={
+									settingsForm.proxy_upstream_timeout_ms
+										? String(Number(settingsForm.proxy_upstream_timeout_ms) / 1000)
+										: "0"
+								}
 								onInput={(event) => {
 									const target = event.currentTarget as HTMLInputElement | null;
+									const secs = Number(target?.value ?? 0);
 									onFormChange({
-										proxy_upstream_timeout_ms: target?.value ?? "",
+										proxy_upstream_timeout_ms: String(secs * 1000),
 									});
 								}}
 							/>
@@ -530,7 +535,7 @@ export const SettingsView = ({
 									class="app-settings-row__label"
 									for="proxy-retry-sleep-ms"
 								>
-									等待时间（毫秒）
+									等待时间（秒）
 								</label>
 								<p class="app-settings-row__hint">错误后二次请求等待时间</p>
 							</div>
@@ -540,12 +545,17 @@ export const SettingsView = ({
 								name="proxy_retry_sleep_ms"
 								type="number"
 								min="0"
-								step="1"
-								value={settingsForm.proxy_retry_sleep_ms}
+								step="0.1"
+								value={
+									settingsForm.proxy_retry_sleep_ms
+										? String(Number(settingsForm.proxy_retry_sleep_ms) / 1000)
+										: "0"
+								}
 								onInput={(event) => {
 									const target = event.currentTarget as HTMLInputElement | null;
+									const secs = Number(target?.value ?? 0);
 									onFormChange({
-										proxy_retry_sleep_ms: target?.value ?? "",
+										proxy_retry_sleep_ms: String(Math.floor(secs * 1000)),
 									});
 								}}
 							/>
@@ -943,7 +953,7 @@ export const SettingsView = ({
 						<div class="app-settings-row">
 							<div class="app-settings-row__main">
 								<label class="app-settings-row__label" for="site-task-timeout">
-									站点任务超时（毫秒）
+									站点任务超时（秒）
 								</label>
 								<p class="app-settings-row__hint">
 									单个站点任务允许执行的最长时间
@@ -956,10 +966,17 @@ export const SettingsView = ({
 								type="number"
 								min="1"
 								step="1"
-								value={settingsForm.site_task_timeout_ms}
+								value={
+									settingsForm.site_task_timeout_ms
+										? String(Number(settingsForm.site_task_timeout_ms) / 1000)
+										: "12"
+								}
 								onInput={(event) => {
 									const target = event.currentTarget as HTMLInputElement | null;
-									onFormChange({ site_task_timeout_ms: target?.value ?? "" });
+									const secs = Number(target?.value ?? 0);
+									onFormChange({
+										site_task_timeout_ms: String(Math.floor(secs * 1000)),
+									});
 								}}
 							/>
 						</div>
@@ -1091,7 +1108,7 @@ export const SettingsView = ({
 											class="app-settings-row__label"
 											for="proxy-stream-usage-parse-timeout"
 										>
-											流式解析超时（毫秒）
+											流式解析超时（秒）
 										</label>
 										<p class="app-settings-row__hint">
 											SSE usage 解析任务的超时时间，0 表示不限制
@@ -1103,13 +1120,24 @@ export const SettingsView = ({
 										name="proxy_stream_usage_parse_timeout_ms"
 										type="number"
 										min="0"
-										value={settingsForm.proxy_stream_usage_parse_timeout_ms}
+										step="1"
+										value={
+											settingsForm.proxy_stream_usage_parse_timeout_ms
+												? String(
+														Number(
+															settingsForm.proxy_stream_usage_parse_timeout_ms,
+														) / 1000,
+													)
+												: "0"
+										}
 										onInput={(event) => {
 											const target =
 												event.currentTarget as HTMLInputElement | null;
+											const secs = Number(target?.value ?? 0);
 											onFormChange({
-												proxy_stream_usage_parse_timeout_ms:
-													target?.value ?? "",
+												proxy_stream_usage_parse_timeout_ms: String(
+													Math.floor(secs * 1000),
+												),
 											});
 										}}
 									/>
