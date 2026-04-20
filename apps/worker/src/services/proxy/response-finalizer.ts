@@ -22,6 +22,7 @@ import {
 	buildAttemptFailureSummary,
 	normalizeMessage,
 	scheduleDbWrite,
+	supportsAbortSignalEvents,
 } from "./shared";
 import { parseUsageFromSse } from "../../utils/usage";
 
@@ -432,7 +433,7 @@ export async function finalizeSelectedResponse(ctx: any): Promise<Response> {
 		}
 	}
 
-	if (downstreamSignal.aborted) {
+	if (downstreamSignal?.aborted === true) {
 		recordSelectedClientDisconnect(
 			selectedStreamUsageContext
 				? {
@@ -572,7 +573,11 @@ export async function finalizeSelectedResponse(ctx: any): Promise<Response> {
 				finalizeStreamDisconnect();
 				void cancelReader(DOWNSTREAM_CLIENT_ABORT_ERROR_CODE);
 			};
-			downstreamSignal.addEventListener("abort", abortListener, { once: true });
+			if (supportsAbortSignalEvents(downstreamSignal)) {
+				downstreamSignal.addEventListener("abort", abortListener, {
+					once: true,
+				});
+			}
 			const observedStream = new ReadableStream<Uint8Array>({
 				async start(controller) {
 					try {
@@ -589,20 +594,24 @@ export async function finalizeSelectedResponse(ctx: any): Promise<Response> {
 							controller.enqueue(value);
 						}
 					} catch (error) {
-						if (finalized || downstreamSignal.aborted) {
+						if (finalized || downstreamSignal?.aborted === true) {
 							finalizeStreamDisconnect();
 							return;
 						}
 						finalizeStreamError(error);
 						controller.error(error);
 					} finally {
-						downstreamSignal.removeEventListener("abort", abortListener);
+						if (supportsAbortSignalEvents(downstreamSignal)) {
+							downstreamSignal.removeEventListener("abort", abortListener);
+						}
 						reader.releaseLock();
 					}
 				},
 				cancel(reason) {
 					finalizeStreamDisconnect();
-					downstreamSignal.removeEventListener("abort", abortListener);
+					if (supportsAbortSignalEvents(downstreamSignal)) {
+						downstreamSignal.removeEventListener("abort", abortListener);
+					}
 					return cancelReader(reason);
 				},
 			});

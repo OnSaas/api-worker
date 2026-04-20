@@ -65,6 +65,15 @@ export function normalizeStringField(value: unknown): string | null {
 	return trimmed.length > 0 ? trimmed : null;
 }
 
+export function supportsAbortSignalEvents(
+	signal?: AbortSignal | null,
+): signal is AbortSignal {
+	return (
+		typeof signal?.addEventListener === "function" &&
+		typeof signal?.removeEventListener === "function"
+	);
+}
+
 function redactHeaderValue(key: string, value: string): string {
 	const normalizedKey = key.trim().toLowerCase();
 	if (
@@ -224,9 +233,13 @@ export function sleep(
 			resolve(false);
 		};
 		const cleanup = () => {
-			signal?.removeEventListener("abort", onAbort);
+			if (supportsAbortSignalEvents(signal)) {
+				signal.removeEventListener("abort", onAbort);
+			}
 		};
-		signal?.addEventListener("abort", onAbort, { once: true });
+		if (supportsAbortSignalEvents(signal)) {
+			signal.addEventListener("abort", onAbort, { once: true });
+		}
 	});
 }
 

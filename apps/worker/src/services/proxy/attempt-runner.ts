@@ -213,7 +213,7 @@ export async function runProxyAttempts(ctx: any): Promise<any> {
 				downstreamSignal,
 				downstreamAbortResponse,
 			);
-			if (downstreamSignal.aborted) {
+			if (downstreamSignal?.aborted === true) {
 				return done(downstreamAbortResponse());
 			}
 			if (dispatchResult?.kind === "binding_error") {
@@ -767,7 +767,7 @@ export async function runProxyAttempts(ctx: any): Promise<any> {
 			}
 		}
 	}
-	if (downstreamSignal.aborted) {
+	if (downstreamSignal?.aborted === true) {
 		recordSelectedClientDisconnect();
 		return done(downstreamAbortResponse());
 	}
@@ -776,7 +776,7 @@ export async function runProxyAttempts(ctx: any): Promise<any> {
 	}
 	if (!dispatchHandled) {
 		for (const [attemptIndex, channel] of ordered.entries()) {
-			if (downstreamSignal.aborted) {
+			if (downstreamSignal?.aborted === true) {
 				return done(downstreamAbortResponse());
 			}
 			if (
@@ -859,7 +859,10 @@ export async function runProxyAttempts(ctx: any): Promise<any> {
 					downstreamSignal,
 					downstreamAbortResponse,
 				);
-				if (attemptResult.kind === "aborted" || downstreamSignal.aborted) {
+				if (
+					attemptResult.kind === "aborted" ||
+					downstreamSignal?.aborted === true
+				) {
 					return done(downstreamAbortResponse());
 				}
 				if (
@@ -992,7 +995,10 @@ export async function runProxyAttempts(ctx: any): Promise<any> {
 							downstreamSignal,
 							downstreamAbortResponse,
 						);
-						if (retried.kind === "aborted" || downstreamSignal.aborted) {
+						if (
+							retried.kind === "aborted" ||
+							downstreamSignal?.aborted === true
+						) {
 							return done(downstreamAbortResponse());
 						}
 						if (
@@ -1585,7 +1591,7 @@ export async function runProxyAttempts(ctx: any): Promise<any> {
 					break;
 				}
 			} catch (error) {
-				if (downstreamSignal.aborted) {
+				if (downstreamSignal?.aborted === true) {
 					return done(downstreamAbortResponse());
 				}
 				const fetchFailure = buildFetchExceptionFailure({
@@ -1683,7 +1689,7 @@ export async function runProxyAttempts(ctx: any): Promise<any> {
 			}
 		}
 	}
-	if (downstreamSignal.aborted) {
+	if (downstreamSignal?.aborted === true) {
 		recordSelectedClientDisconnect();
 		return done(downstreamAbortResponse());
 	}

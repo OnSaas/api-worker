@@ -1342,7 +1342,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 		attemptNumber: number,
 		action: ProxyErrorAction,
 	): Promise<boolean> => {
-		if (downstreamSignal.aborted) {
+		if (downstreamSignal?.aborted === true) {
 			return false;
 		}
 		if (attemptNumber >= ordered.length) {
@@ -1354,7 +1354,7 @@ proxy.all("/*", tokenAuth, async (c) => {
 				return false;
 			}
 		}
-		return !downstreamSignal.aborted;
+		return !Boolean(downstreamSignal?.aborted);
 	};
 	const buildDirectErrorResponse = (
 		status: number | null,

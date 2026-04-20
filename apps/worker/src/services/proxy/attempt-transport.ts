@@ -4,7 +4,11 @@ import type {
 	StreamAbnormalSuccess,
 	StreamUsageOptions,
 } from "../../utils/usage";
-import { normalizeMessage, normalizeStringField } from "./shared";
+import {
+	normalizeMessage,
+	normalizeStringField,
+	supportsAbortSignalEvents,
+} from "./shared";
 
 export const ATTEMPT_BINDING_RESPONSE_PATH_HEADER =
 	"x-ha-attempt-response-path";
@@ -145,27 +149,30 @@ async function fetchWithTimeoutLocal(
 	timeoutMs: number,
 	signal?: AbortSignal | null,
 ): Promise<Response> {
-	if (signal?.aborted) {
-		return fetch(url, {
-			...init,
-			signal,
-		});
-	}
-	if (timeoutMs <= 0) {
-		return fetch(url, signal ? { ...init, signal } : init);
+	if (!signal && timeoutMs <= 0) {
+		return fetch(url, init);
 	}
 	const controller = new AbortController();
-	const timer = setTimeout(() => controller.abort(), timeoutMs);
 	const onAbort = () => controller.abort(signal?.reason);
-	signal?.addEventListener("abort", onAbort, { once: true });
+	if (signal?.aborted) {
+		controller.abort(signal.reason);
+	} else if (supportsAbortSignalEvents(signal)) {
+		signal.addEventListener("abort", onAbort, { once: true });
+	}
+	const timer =
+		timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
 	try {
 		return await fetch(url, {
 			...init,
 			signal: controller.signal,
 		});
 	} finally {
-		clearTimeout(timer);
-		signal?.removeEventListener("abort", onAbort);
+		if (timer !== null) {
+			clearTimeout(timer);
+		}
+		if (supportsAbortSignalEvents(signal)) {
+			signal.removeEventListener("abort", onAbort);
+		}
 	}
 }
 
@@ -462,7 +469,6 @@ export async function executeAttemptViaWorker(
 						"content-type": "application/json",
 					},
 					body: JSON.stringify(input),
-					signal: signal as never,
 				});
 		const attemptWorkerError = await parseAttemptWorkerErrorResponse(
 			response as unknown as Response,
@@ -561,7 +567,6 @@ export async function executeDispatchViaWorker(
 							"content-type": "application/json",
 						},
 						body: JSON.stringify(input),
-						signal: signal as never,
 					} as never,
 				);
 		const attemptWorkerError = await parseAttemptWorkerErrorResponse(

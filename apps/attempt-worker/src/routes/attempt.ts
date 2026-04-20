@@ -97,6 +97,15 @@ type RetryConfig = {
 
 const attempt = new Hono<AppEnv>();
 
+function supportsAbortSignalEvents(
+	signal?: AbortSignal | null,
+): signal is AbortSignal {
+	return (
+		typeof signal?.addEventListener === "function" &&
+		typeof signal?.removeEventListener === "function"
+	);
+}
+
 function normalizeRequestId(headers: Headers): string | null {
 	const candidates = [
 		"x-request-id",
@@ -155,9 +164,13 @@ function sleep(delayMs: number, signal?: AbortSignal | null): Promise<boolean> {
 			resolve(false);
 		};
 		const cleanup = () => {
-			signal?.removeEventListener("abort", onAbort);
+			if (supportsAbortSignalEvents(signal)) {
+				signal.removeEventListener("abort", onAbort);
+			}
 		};
-		signal?.addEventListener("abort", onAbort, { once: true });
+		if (supportsAbortSignalEvents(signal)) {
+			signal.addEventListener("abort", onAbort, { once: true });
+		}
 	});
 }
 
@@ -225,27 +238,30 @@ async function fetchWithTimeout(
 	timeoutMs: number,
 	signal?: AbortSignal | null,
 ): Promise<Response> {
-	if (signal?.aborted) {
-		return fetch(url, {
-			...init,
-			signal,
-		});
-	}
-	if (timeoutMs <= 0) {
-		return fetch(url, signal ? { ...init, signal } : init);
+	if (!signal && timeoutMs <= 0) {
+		return fetch(url, init);
 	}
 	const controller = new AbortController();
-	const timer = setTimeout(() => controller.abort(), timeoutMs);
 	const onAbort = () => controller.abort(signal?.reason);
-	signal?.addEventListener("abort", onAbort, { once: true });
+	if (signal?.aborted) {
+		controller.abort(signal.reason);
+	} else if (supportsAbortSignalEvents(signal)) {
+		signal.addEventListener("abort", onAbort, { once: true });
+	}
+	const timer =
+		timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
 	try {
 		return await fetch(url, {
 			...init,
 			signal: controller.signal,
 		});
 	} finally {
-		clearTimeout(timer);
-		signal?.removeEventListener("abort", onAbort);
+		if (timer !== null) {
+			clearTimeout(timer);
+		}
+		if (supportsAbortSignalEvents(signal)) {
+			signal.removeEventListener("abort", onAbort);
+		}
 	}
 }
 
@@ -338,7 +354,7 @@ function buildErrorResponse(
 			},
 		}),
 		{
-			status: 599,
+			status: isTimeout ? 504 : 502,
 			headers: outHeaders,
 		},
 	);
@@ -812,7 +828,7 @@ attempt.post("/dispatch", async (c) => {
 		attemptIndex += 1
 	) {
 		const item = attempts[attemptIndex];
-		if (callerSignal.aborted) {
+		if (callerSignal?.aborted === true) {
 			return attachAttemptHeaders(
 				{
 					response: buildClientAbortResponse(
@@ -861,7 +877,7 @@ attempt.post("/dispatch", async (c) => {
 			attemptIndex,
 			channelId,
 		};
-		if (callerSignal.aborted || result.response.status === 499) {
+		if (Boolean(callerSignal?.aborted) || result.response.status === 499) {
 			return attachAttemptHeaders(result, body?.streamUsage, {
 				[DISPATCH_ATTEMPT_INDEX_HEADER]: String(attemptIndex),
 				[DISPATCH_CHANNEL_ID_HEADER]: channelId,
@@ -923,7 +939,7 @@ attempt.post("/dispatch", async (c) => {
 			}
 		}
 	}
-	if (callerSignal.aborted) {
+	if (callerSignal?.aborted === true) {
 		const responsePath =
 			lastResult?.result.responsePath ??
 			attempts[0]?.responsePath?.trim() ??
