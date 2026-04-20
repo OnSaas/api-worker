@@ -5,6 +5,10 @@ import {
 	replaceCallTokensForChannel,
 } from "../services/channel-call-token-repo";
 import {
+	clearChannelModelCooldown,
+	listCoolingDownModelEntriesByChannel,
+} from "../services/channel-model-capabilities";
+import {
 	deleteChannel,
 	getChannelById,
 	insertChannel,
@@ -44,6 +48,7 @@ import {
 	listSiteTaskReports,
 	saveSiteTaskReport,
 } from "../services/site-task-report-store";
+import { getProxyRuntimeSettings } from "../services/settings";
 
 const sites = new Hono<AppEnv>();
 
@@ -161,11 +166,23 @@ const buildSiteRecord = (
 		api_key: string;
 		priority?: number | null;
 	}>,
+	coolingModels: Array<{
+		model: string;
+		last_err_at: number;
+		last_err_code: string | null;
+		last_err_count: number;
+		cooldown_count: number;
+		remaining_seconds: number;
+	}>,
 ) => {
 	const metadata = parseSiteMetadata(channel.metadata_json);
 	const rawEnabled = channel.checkin_enabled ?? 0;
 	const checkinEnabled =
 		typeof rawEnabled === "boolean" ? rawEnabled : Number(rawEnabled) === 1;
+	const cooldownMaxRemainingSeconds = coolingModels.reduce(
+		(max, item) => Math.max(max, Number(item.remaining_seconds ?? 0)),
+		0,
+	);
 	return {
 		id: channel.id,
 		name: channel.name,
@@ -185,6 +202,9 @@ const buildSiteRecord = (
 		last_checkin_message: channel.last_checkin_message ?? null,
 		last_checkin_at: channel.last_checkin_at ?? null,
 		verification: parseSiteVerificationSummary(channel.metadata_json),
+		cooling_models: coolingModels,
+		cooling_model_count: coolingModels.length,
+		cooling_max_remaining_seconds: cooldownMaxRemainingSeconds,
 		created_at: channel.created_at ?? null,
 		updated_at: channel.updated_at ?? null,
 	};
@@ -196,6 +216,14 @@ sites.get("/", async (c) => {
 		order: "DESC",
 	});
 	const channelIds = channels.map((channel) => channel.id);
+	const runtimeSettings = await getProxyRuntimeSettings(c.env.DB);
+	const coolingModelMap = await listCoolingDownModelEntriesByChannel(
+		c.env.DB,
+		channelIds,
+		Math.max(0, Math.floor(runtimeSettings.model_failure_cooldown_minutes)) *
+			60,
+		Math.max(1, Math.floor(runtimeSettings.model_failure_cooldown_threshold)),
+	);
 	const callTokenRows = await listCallTokens(c.env.DB, {
 		channelIds,
 	});
@@ -233,7 +261,17 @@ sites.get("/", async (c) => {
 							},
 						]
 					: [];
-		return buildSiteRecord(channel, callTokens);
+		const coolingModels = (coolingModelMap.get(channel.id) ?? []).map(
+			(entry) => ({
+				model: entry.model,
+				last_err_at: entry.last_err_at,
+				last_err_code: entry.last_err_code,
+				last_err_count: entry.last_err_count,
+				cooldown_count: entry.cooldown_count,
+				remaining_seconds: entry.remaining_seconds,
+			}),
+		);
+		return buildSiteRecord(channel, callTokens, coolingModels);
 	});
 	const taskReports = await listSiteTaskReports(c.env.DB);
 	return c.json({ sites: sitesList, task_reports: taskReports });
@@ -449,6 +487,23 @@ sites.post("/:id/verify", async (c) => {
 	}
 	await invalidateSelectionHotCache(c.env.KV_HOT);
 	return c.json(result);
+});
+
+sites.post("/:id/cooling-models/reset", async (c) => {
+	const id = c.req.param("id");
+	const body = (await c.req.json().catch(() => null)) as {
+		model?: string;
+	} | null;
+	const model = String(body?.model ?? "").trim();
+	if (!model) {
+		return jsonError(c, 400, "missing_model", "missing_model");
+	}
+	const current = await getChannelById(c.env.DB, id);
+	if (!current) {
+		return jsonError(c, 404, "site_not_found", "site_not_found");
+	}
+	const cleared = await clearChannelModelCooldown(c.env.DB, id, model);
+	return c.json({ ok: true, cleared });
 });
 
 sites.post("/verify-batch", async (c) => {

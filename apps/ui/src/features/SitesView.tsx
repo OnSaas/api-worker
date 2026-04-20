@@ -18,6 +18,8 @@ import {
 } from "../components/ui";
 import {
 	getSiteCheckinLabel,
+	getSiteCoolingMaxRemainingSeconds,
+	getSiteCoolingModelCount,
 	getSiteStatusLabel,
 	getPrimaryVerificationIssue,
 	getSuggestedActionLabel,
@@ -25,11 +27,13 @@ import {
 	getVerificationSeverityLabel,
 	getVerificationSeverityRank,
 	getVerificationVerdictLabel,
+	type SiteCooldownFilter,
 	type SiteSortKey,
 	type SiteSortState,
 } from "../core/sites";
 import type {
 	Site,
+	SiteCoolingModel,
 	SiteChannelRefreshItem,
 	SiteForm,
 	SiteTaskKind,
@@ -45,6 +49,7 @@ import {
 } from "../core/utils";
 
 type SitesViewProps = {
+	sites: Site[];
 	siteForm: SiteForm;
 	sitePage: number;
 	sitePageSize: number;
@@ -55,6 +60,7 @@ type SitesViewProps = {
 	isSiteModalOpen: boolean;
 	taskReports: SiteTaskReportMap;
 	siteSearch: string;
+	siteCooldownFilter: SiteCooldownFilter;
 	siteSort: SiteSortState;
 	isActionPending: (key: string) => boolean;
 	onCreate: () => void;
@@ -69,6 +75,7 @@ type SitesViewProps = {
 	onPageChange: (next: number) => void;
 	onPageSizeChange: (next: number) => void;
 	onSearchChange: (next: string) => void;
+	onCooldownFilterChange: (next: SiteCooldownFilter) => void;
 	onSortChange: (next: SiteSortState) => void;
 	onFormChange: (patch: Partial<SiteForm>) => void;
 	onRunAll: () => void;
@@ -77,6 +84,7 @@ type SitesViewProps = {
 	onRefreshAll: () => void;
 	onDisableFailedSite: (site: SiteVerificationResult) => void;
 	onDisableAllFailedSites: () => void;
+	onClearCoolingModel: (siteId: string, model: string) => void;
 };
 
 const pageSizeOptions = [10, 20, 50];
@@ -92,12 +100,17 @@ const siteStatusOptions = [
 	{ value: "active", label: getSiteStatusLabel("active") },
 	{ value: "disabled", label: getSiteStatusLabel("disabled") },
 ];
+const cooldownFilterOptions = [
+	{ value: "all", label: "全部站点" },
+	{ value: "cooling", label: "仅冷却中" },
+] as const;
 const sortableColumns: Array<{ key: SiteSortKey; label: string }> = [
 	{ key: "name", label: "站点" },
 	{ key: "type", label: "类型" },
 	{ key: "status", label: "状态" },
 	{ key: "weight", label: "权重" },
 	{ key: "tokens", label: "令牌" },
+	{ key: "cooldowns", label: "冷却模型" },
 	{ key: "checkin_enabled", label: "自动签到" },
 	{ key: "checkin", label: "今日签到" },
 ];
@@ -107,6 +120,12 @@ const siteColumnOptions = [
 	{ id: "status", label: "状态", width: "minmax(0,0.6fr)", locked: true },
 	{ id: "weight", label: "权重", width: "minmax(0,0.5fr)", locked: true },
 	{ id: "tokens", label: "令牌", width: "minmax(0,0.6fr)", locked: true },
+	{
+		id: "cooldowns",
+		label: "冷却模型",
+		width: "minmax(0,0.9fr)",
+		locked: true,
+	},
 	{
 		id: "checkin_enabled",
 		label: "自动签到",
@@ -122,12 +141,14 @@ const requiredSiteColumns = [
 	"status",
 	"weight",
 	"tokens",
+	"cooldowns",
 	"checkin_enabled",
 	"checkin",
 	"actions",
 ];
-const siteColumnVersion = "2026-03-18";
+const siteColumnVersion = "2026-04-20";
 const columnTooltips: Partial<Record<SiteSortKey, string>> = {
+	cooldowns: "按冷却模型数量排序；数量相同则按最长剩余冷却时间排序。",
 	checkin_enabled: "仅 new-api 类型支持自动签到。",
 	checkin: "展示今天的签到结果。",
 };
@@ -167,6 +188,44 @@ const formatTaskTime = (value: string) =>
 	});
 
 const formatTaskDateTime = (value: string) => formatChinaDateTimeMinute(value);
+
+const formatCooldownDuration = (seconds: number) => {
+	const safeSeconds = Math.max(0, Math.floor(seconds));
+	if (safeSeconds <= 0) {
+		return "即将恢复";
+	}
+	const days = Math.floor(safeSeconds / 86400);
+	const hours = Math.floor((safeSeconds % 86400) / 3600);
+	const minutes = Math.floor((safeSeconds % 3600) / 60);
+	if (days > 0) {
+		return `${days}天 ${hours}小时`;
+	}
+	if (hours > 0) {
+		return `${hours}小时 ${minutes}分钟`;
+	}
+	return `${Math.max(1, minutes)}分钟`;
+};
+
+const getCoolingModels = (site: Site) => site.cooling_models ?? [];
+
+const getCoolingSummaryLabel = (site: Site) => {
+	const count = getSiteCoolingModelCount(site);
+	if (count <= 0) {
+		return "无";
+	}
+	return `${count} 个`;
+};
+
+const getCoolingToneClass = (site: Site) => {
+	const count = getSiteCoolingModelCount(site);
+	if (count <= 0) {
+		return "border-white/70 bg-white/70 text-[color:var(--app-ink-muted)]";
+	}
+	if (count >= 3) {
+		return "border-amber-300/70 bg-amber-50 text-amber-700";
+	}
+	return "border-sky-300/70 bg-sky-50 text-sky-700";
+};
 
 const normalizeCallTokenOrder = (tokens: SiteForm["call_tokens"]) =>
 	tokens.map((token, index) => ({
@@ -274,6 +333,7 @@ type CallTokenOverlayVisual = {
 };
 
 export const SitesView = ({
+	sites,
 	siteForm,
 	sitePage,
 	sitePageSize,
@@ -284,6 +344,7 @@ export const SitesView = ({
 	isSiteModalOpen,
 	taskReports,
 	siteSearch,
+	siteCooldownFilter,
 	siteSort,
 	isActionPending,
 	onCreate,
@@ -298,6 +359,7 @@ export const SitesView = ({
 	onPageChange,
 	onPageSizeChange,
 	onSearchChange,
+	onCooldownFilterChange,
 	onSortChange,
 	onFormChange,
 	onRunAll,
@@ -306,6 +368,7 @@ export const SitesView = ({
 	onRefreshAll,
 	onDisableFailedSite,
 	onDisableAllFailedSites,
+	onClearCoolingModel,
 }: SitesViewProps) => {
 	const isEditing = Boolean(editingSite);
 	const pageItems = buildPageItems(sitePage, siteTotalPages);
@@ -335,6 +398,9 @@ export const SitesView = ({
 	const callTokenFlipFrameRef = useRef<number | null>(null);
 	const callTokenDropTimerRef = useRef<number | null>(null);
 	const [activeReportTask, setActiveReportTask] = useState<SiteTaskKind | null>(
+		null,
+	);
+	const [cooldownDetailSite, setCooldownDetailSite] = useState<Site | null>(
 		null,
 	);
 	const isOfficialType =
@@ -785,6 +851,13 @@ export const SitesView = ({
 		setActiveReportTask(kind);
 	};
 	const closeTaskReport = () => setActiveReportTask(null);
+	const openCooldownDetails = (site: Site) => {
+		if (getSiteCoolingModelCount(site) <= 0) {
+			return;
+		}
+		setCooldownDetailSite(site);
+	};
+	const closeCooldownDetails = () => setCooldownDetailSite(null);
 	const runTask = (kind: SiteTaskKind) => {
 		if (kind === "checkin") {
 			onRunAll();
@@ -801,6 +874,28 @@ export const SitesView = ({
 		onRefreshAll();
 	};
 	const displayPages = siteTotal === 0 ? 0 : siteTotalPages;
+
+	useEffect(() => {
+		if (!cooldownDetailSite) {
+			return;
+		}
+		const latest = sites.find((site) => site.id === cooldownDetailSite.id);
+		if (!latest) {
+			setCooldownDetailSite(null);
+			return;
+		}
+		const latestSignature = JSON.stringify(latest.cooling_models ?? []);
+		const currentSignature = JSON.stringify(
+			cooldownDetailSite.cooling_models ?? [],
+		);
+		if (
+			latestSignature !== currentSignature ||
+			latest.name !== cooldownDetailSite.name
+		) {
+			setCooldownDetailSite(latest);
+		}
+	}, [cooldownDetailSite, sites]);
+
 	useEffect(() => {
 		if (!isSiteModalOpen) {
 			return;
@@ -1503,6 +1598,109 @@ export const SitesView = ({
 			</Dialog>
 		);
 	};
+	const renderCooldownDetailsDialog = () => {
+		if (!cooldownDetailSite) {
+			return null;
+		}
+		const coolingModels = [...getCoolingModels(cooldownDetailSite)].sort(
+			(left: SiteCoolingModel, right: SiteCoolingModel) =>
+				right.remaining_seconds - left.remaining_seconds ||
+				right.last_err_count - left.last_err_count ||
+				left.model.localeCompare(right.model),
+		);
+		const maxRemaining = getSiteCoolingMaxRemainingSeconds(cooldownDetailSite);
+		return (
+			<Dialog open={Boolean(cooldownDetailSite)} onClose={closeCooldownDetails}>
+				<DialogContent class="max-w-4xl" aria-modal="true">
+					<DialogHeader>
+						<div>
+							<DialogTitle>模型冷却详情</DialogTitle>
+							<DialogDescription>
+								{cooldownDetailSite.name} · {coolingModels.length} 个模型冷却中
+								{maxRemaining > 0
+									? ` · 最长剩余 ${formatCooldownDuration(maxRemaining)}`
+									: ""}
+							</DialogDescription>
+						</div>
+						<Button size="sm" type="button" onClick={closeCooldownDetails}>
+							关闭
+						</Button>
+					</DialogHeader>
+					<div class="mt-3 max-h-[55vh] space-y-2 overflow-y-auto">
+						{coolingModels.length === 0 ? (
+							<p class="text-xs text-[color:var(--app-ink-muted)]">
+								当前没有冷却中的模型。
+							</p>
+						) : (
+							coolingModels.map((item) => (
+								<div
+									class="grid gap-3 rounded-xl border border-amber-200/70 bg-amber-50/70 px-4 py-3 md:grid-cols-[minmax(0,1.2fr)_minmax(0,0.75fr)_minmax(0,0.75fr)_minmax(0,1fr)_auto]"
+									key={`${cooldownDetailSite.id}:${item.model}`}
+								>
+									<div class="min-w-0">
+										<p class="truncate text-sm font-semibold text-[color:var(--app-ink)]">
+											{item.model}
+										</p>
+										<p class="mt-1 truncate text-[11px] text-[color:var(--app-ink-muted)]">
+											错误码：{item.last_err_code || "-"}
+										</p>
+									</div>
+									<div>
+										<p class="text-[11px] font-semibold text-[color:var(--app-ink-muted)]">
+											剩余
+										</p>
+										<p class="mt-1 text-xs font-semibold text-amber-700">
+											{formatCooldownDuration(item.remaining_seconds)}
+										</p>
+									</div>
+									<div>
+										<p class="text-[11px] font-semibold text-[color:var(--app-ink-muted)]">
+											连续失败
+										</p>
+										<p class="mt-1 text-xs text-[color:var(--app-ink)]">
+											{item.last_err_count} 次
+										</p>
+									</div>
+									<div>
+										<p class="text-[11px] font-semibold text-[color:var(--app-ink-muted)]">
+											最近失败
+										</p>
+										<p class="mt-1 text-xs text-[color:var(--app-ink)]">
+											{new Date(item.last_err_at * 1000).toLocaleString(
+												"zh-CN",
+												{
+													hour12: false,
+												},
+											)}
+										</p>
+									</div>
+									<div class="flex items-center justify-end">
+										<Button
+											class="h-8 px-3 text-xs"
+											size="sm"
+											type="button"
+											disabled={isActionPending(
+												`site:clearCooling:${cooldownDetailSite.id}:${item.model}`,
+											)}
+											onClick={() =>
+												onClearCoolingModel(cooldownDetailSite.id, item.model)
+											}
+										>
+											{isActionPending(
+												`site:clearCooling:${cooldownDetailSite.id}:${item.model}`,
+											)
+												? "解除中..."
+												: "解除"}
+										</Button>
+									</div>
+								</div>
+							))
+						)}
+					</div>
+				</DialogContent>
+			</Dialog>
+		);
+	};
 	return (
 		<div class="space-y-5">
 			<div class="app-panel animate-fade-up space-y-4">
@@ -1596,6 +1794,14 @@ export const SitesView = ({
 								}
 							/>
 						</div>
+						<SingleSelect
+							class="w-full sm:w-40"
+							options={[...cooldownFilterOptions]}
+							value={siteCooldownFilter}
+							onChange={(next) =>
+								onCooldownFilterChange(next as SiteCooldownFilter)
+							}
+						/>
 						<div class="flex flex-wrap items-center gap-2 md:hidden">
 							{sortableColumns.map((column) => (
 								<button
@@ -1616,16 +1822,22 @@ export const SitesView = ({
 					<div class="app-mobile-stack space-y-3 md:hidden">
 						{pagedSites.length === 0 ? (
 							<Card class="text-center text-sm text-[color:var(--app-ink-muted)]">
-								<p>暂无站点，请先创建。</p>
-								<Button
-									class="mt-4 h-9 px-4 text-xs"
-									size="sm"
-									variant="primary"
-									type="button"
-									onClick={onCreate}
-								>
-									新增站点
-								</Button>
+								<p>
+									{siteCooldownFilter === "cooling"
+										? "暂无冷却中的模型-站点。"
+										: "暂无站点，请先创建。"}
+								</p>
+								{siteCooldownFilter === "cooling" ? null : (
+									<Button
+										class="mt-4 h-9 px-4 text-xs"
+										size="sm"
+										variant="primary"
+										type="button"
+										onClick={onCreate}
+									>
+										新增站点
+									</Button>
+								)}
 							</Card>
 						) : (
 							pagedSites.map((site) => {
@@ -1638,6 +1850,7 @@ export const SitesView = ({
 									site.system_token && site.system_userid,
 								);
 								const callTokenCount = site.call_tokens?.length ?? 0;
+								const coolingCount = getSiteCoolingModelCount(site);
 								const verifyPending = isActionPending(`site:verify:${site.id}`);
 								const checkinPending = isActionPending(
 									`site:checkin:${site.id}`,
@@ -1704,6 +1917,17 @@ export const SitesView = ({
 												<p class="mt-1 font-semibold text-[color:var(--app-ink)]">
 													{callTokenCount > 0 ? `${callTokenCount} 个` : "-"}
 												</p>
+											</Card>
+											<Card variant="compact">
+												<p>冷却模型</p>
+												<button
+													class={`mt-1 inline-flex rounded-full border px-2 py-0.5 text-[11px] font-semibold ${getCoolingToneClass(site)}`}
+													type="button"
+													disabled={coolingCount <= 0}
+													onClick={() => openCooldownDetails(site)}
+												>
+													{getCoolingSummaryLabel(site)}
+												</button>
 											</Card>
 											{site.site_type === "new-api" && (
 												<Card variant="compact">
@@ -1835,16 +2059,22 @@ export const SitesView = ({
 						</div>
 						{pagedSites.length === 0 ? (
 							<div class="app-list-empty px-4 py-10 text-center text-sm text-[color:var(--app-ink-muted)]">
-								<p>暂无站点，请先创建。</p>
-								<Button
-									class="mt-4 h-9 px-4 text-xs"
-									size="sm"
-									variant="primary"
-									type="button"
-									onClick={onCreate}
-								>
-									新增站点
-								</Button>
+								<p>
+									{siteCooldownFilter === "cooling"
+										? "暂无冷却中的模型-站点。"
+										: "暂无站点，请先创建。"}
+								</p>
+								{siteCooldownFilter === "cooling" ? null : (
+									<Button
+										class="mt-4 h-9 px-4 text-xs"
+										size="sm"
+										variant="primary"
+										type="button"
+										onClick={onCreate}
+									>
+										新增站点
+									</Button>
+								)}
 							</div>
 						) : (
 							<div class="app-list-body divide-y divide-white/60">
@@ -1853,6 +2083,7 @@ export const SitesView = ({
 									const canCheckin = site.site_type === "new-api";
 									const checkinDisabled = !canCheckin;
 									const callTokenCount = site.call_tokens?.length ?? 0;
+									const coolingCount = getSiteCoolingModelCount(site);
 									const verifyPending = isActionPending(
 										`site:verify:${site.id}`,
 									);
@@ -1922,6 +2153,18 @@ export const SitesView = ({
 											{visibleColumnSet.has("tokens") && (
 												<div class="text-xs text-[color:var(--app-ink-muted)]">
 													{callTokenCount > 0 ? `${callTokenCount} 个` : "-"}
+												</div>
+											)}
+											{visibleColumnSet.has("cooldowns") && (
+												<div>
+													<button
+														class={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold ${getCoolingToneClass(site)}`}
+														type="button"
+														disabled={coolingCount <= 0}
+														onClick={() => openCooldownDetails(site)}
+													>
+														{getCoolingSummaryLabel(site)}
+													</button>
 												</div>
 											)}
 											{visibleColumnSet.has("checkin_enabled") && (
@@ -2049,6 +2292,7 @@ export const SitesView = ({
 					</div>
 				</div>
 			</div>
+			{renderCooldownDetailsDialog()}
 			{renderTaskReportDialog()}
 			{isSiteModalOpen && (
 				<Dialog open={isSiteModalOpen} onClose={onCloseModal}>

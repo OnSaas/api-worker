@@ -11,6 +11,17 @@ export type CapabilityRow = {
 	cooldown_count?: number | null;
 };
 
+export type ChannelModelCooldownSummary = {
+	channel_id: string;
+	model: string;
+	last_ok_at: number | null;
+	last_err_at: number;
+	last_err_code: string | null;
+	last_err_count: number;
+	cooldown_count: number;
+	remaining_seconds: number;
+};
+
 type ChannelModelCooldownState = {
 	lastOkAt: number;
 	lastErrAt: number;
@@ -230,6 +241,82 @@ export async function listCoolingDownChannelsForModel(
 	return blocked;
 }
 
+export async function listCoolingDownModelEntriesByChannel(
+	db: D1Database,
+	channelIds: string[],
+	cooldownSeconds: number,
+	minErrorCount: number = 1,
+): Promise<Map<string, ChannelModelCooldownSummary[]>> {
+	if (channelIds.length === 0 || cooldownSeconds <= 0) {
+		return new Map();
+	}
+	const now = Math.floor(Date.now() / 1000);
+	const cutoff = now - cooldownSeconds;
+	const placeholders = channelIds.map(() => "?").join(", ");
+	const rows = await db
+		.prepare(
+			`SELECT channel_id, model, last_ok_at, last_err_at, last_err_code, last_err_count, cooldown_count
+			 FROM channel_model_capabilities
+			 WHERE channel_id IN (${placeholders})
+			   AND last_err_at IS NOT NULL
+			   AND last_err_at >= ?`,
+		)
+		.bind(...channelIds, cutoff)
+		.all<{
+			channel_id: string;
+			model: string;
+			last_ok_at: number | null;
+			last_err_at: number | null;
+			last_err_code: string | null;
+			last_err_count: number | null;
+			cooldown_count: number | null;
+		}>();
+	const grouped = new Map<string, ChannelModelCooldownSummary[]>();
+	for (const row of rows.results ?? []) {
+		const lastErrAt = toSafeInt(row.last_err_at);
+		const lastOkAt = toSafeInt(row.last_ok_at);
+		const lastErrCount = toSafeInt(row.last_err_count);
+		if (
+			!lastErrAt ||
+			lastErrAt < cutoff ||
+			lastErrAt < lastOkAt ||
+			lastErrCount < minErrorCount
+		) {
+			continue;
+		}
+		const remainingSeconds = Math.max(0, cooldownSeconds - (now - lastErrAt));
+		if (remainingSeconds <= 0) {
+			continue;
+		}
+		const entry: ChannelModelCooldownSummary = {
+			channel_id: row.channel_id,
+			model: row.model,
+			last_ok_at: Number(row.last_ok_at ?? 0) || null,
+			last_err_at: lastErrAt,
+			last_err_code: row.last_err_code ?? null,
+			last_err_count: lastErrCount,
+			cooldown_count: toSafeInt(row.cooldown_count),
+			remaining_seconds: remainingSeconds,
+		};
+		const list = grouped.get(row.channel_id) ?? [];
+		list.push(entry);
+		grouped.set(row.channel_id, list);
+	}
+	for (const [channelId, entries] of grouped.entries()) {
+		entries.sort((left, right) => {
+			if (right.remaining_seconds !== left.remaining_seconds) {
+				return right.remaining_seconds - left.remaining_seconds;
+			}
+			if (right.last_err_count !== left.last_err_count) {
+				return right.last_err_count - left.last_err_count;
+			}
+			return left.model.localeCompare(right.model);
+		});
+		grouped.set(channelId, entries);
+	}
+	return grouped;
+}
+
 export async function recordChannelModelError(
 	db: D1Database,
 	channelId: string,
@@ -325,6 +412,27 @@ export async function recordChannelModelError(
 		cooldownCount: nextCooldownCount,
 		channelDisabled: false,
 	};
+}
+
+export async function clearChannelModelCooldown(
+	db: D1Database,
+	channelId: string,
+	model: string | null,
+): Promise<boolean> {
+	if (!model) {
+		return false;
+	}
+	const normalizedModel = String(model).trim();
+	if (!normalizedModel) {
+		return false;
+	}
+	const result = await db
+		.prepare(
+			"UPDATE channel_model_capabilities SET last_err_at = NULL, last_err_code = NULL, last_err_count = 0, updated_at = ? WHERE channel_id = ? AND model = ?",
+		)
+		.bind(nowIso(), channelId, normalizedModel)
+		.run();
+	return Number(result.meta?.changes ?? 0) > 0;
 }
 
 export async function recordChannelDisableHit(

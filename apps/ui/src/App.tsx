@@ -28,10 +28,12 @@ import {
 } from "./core/constants";
 import {
 	filterSites,
+	filterSitesByCooldown,
 	getSuggestedActionLabel,
 	getVerificationStageTone,
 	getVerificationVerdictLabel,
 	summarizeVerificationResults,
+	type SiteCooldownFilter,
 	type SiteSortState,
 	sortSites,
 } from "./core/sites";
@@ -370,6 +372,8 @@ const App = () => {
 		loadPageSizePref("pageSize:sites", 10),
 	);
 	const [siteSearch, setSiteSearch] = useState("");
+	const [siteCooldownFilter, setSiteCooldownFilter] =
+		useState<SiteCooldownFilter>("all");
 	const [siteSort, setSiteSort] = useState<SiteSortState>({
 		key: "name",
 		direction: "asc",
@@ -983,6 +987,13 @@ const App = () => {
 	const handleSiteSearchChange = useCallback((next: string) => {
 		setSiteSearch(next);
 	}, []);
+
+	const handleSiteCooldownFilterChange = useCallback(
+		(next: SiteCooldownFilter) => {
+			setSiteCooldownFilter(next);
+		},
+		[],
+	);
 
 	const handleSiteSortChange = useCallback((next: SiteSortState) => {
 		setSiteSort(next);
@@ -2113,6 +2124,32 @@ const App = () => {
 		[endAction, isActionPending, loadSites, pushNotice, startAction, apiFetch],
 	);
 
+	const handleClearCoolingModel = useCallback(
+		async (siteId: string, model: string) => {
+			const actionKey = buildActionKey(
+				"site:clearCooling",
+				`${siteId}:${model}`,
+			);
+			if (isActionPending(actionKey)) {
+				return;
+			}
+			startAction(actionKey);
+			try {
+				await apiFetch(`/api/sites/${siteId}/cooling-models/reset`, {
+					method: "POST",
+					body: JSON.stringify({ model }),
+				});
+				await loadSites();
+				pushNotice("success", `已解除模型冷却：${model}`);
+			} catch (error) {
+				pushNotice("error", (error as Error).message);
+			} finally {
+				endAction(actionKey);
+			}
+		},
+		[apiFetch, endAction, isActionPending, loadSites, pushNotice, startAction],
+	);
+
 	const handleDisableFailedSite = useCallback(
 		async (site: SiteVerificationResult) => {
 			const actionKey = buildActionKey("site:disableFailed", site.site_id);
@@ -2538,8 +2575,12 @@ const App = () => {
 	}, [endAction, isActionPending, loadUsage, pushNotice, startAction]);
 
 	const filteredSites = useMemo(
-		() => filterSites(data.sites, siteSearch),
-		[data.sites, siteSearch],
+		() =>
+			filterSitesByCooldown(
+				filterSites(data.sites, siteSearch),
+				siteCooldownFilter,
+			),
+		[data.sites, siteCooldownFilter, siteSearch],
 	);
 	const sortedSites = useMemo(
 		() => sortSites(filteredSites, siteSort),
@@ -2574,7 +2615,7 @@ const App = () => {
 
 	useEffect(() => {
 		setSitePage(1);
-	}, [siteSearch, siteSort.key, siteSort.direction]);
+	}, [siteCooldownFilter, siteSearch, siteSort.key, siteSort.direction]);
 
 	useEffect(() => {
 		setTokenPage((prev) => Math.min(prev, tokenTotalPages));
@@ -2639,6 +2680,7 @@ const App = () => {
 		if (activeTab === "channels") {
 			return (
 				<SitesView
+					sites={data.sites}
 					siteForm={siteForm}
 					sitePage={sitePage}
 					sitePageSize={sitePageSize}
@@ -2649,6 +2691,7 @@ const App = () => {
 					isSiteModalOpen={isSiteModalOpen}
 					taskReports={siteTaskReports}
 					siteSearch={siteSearch}
+					siteCooldownFilter={siteCooldownFilter}
 					siteSort={siteSort}
 					isActionPending={isActionPending}
 					onCreate={openSiteCreate}
@@ -2663,6 +2706,7 @@ const App = () => {
 					onPageChange={handleSitePageChange}
 					onPageSizeChange={handleSitePageSizeChange}
 					onSearchChange={handleSiteSearchChange}
+					onCooldownFilterChange={handleSiteCooldownFilterChange}
 					onSortChange={handleSiteSortChange}
 					onFormChange={handleSiteFormChange}
 					onRunAll={handleCheckinRunAll}
@@ -2671,6 +2715,7 @@ const App = () => {
 					onRefreshAll={handleRefreshActiveSites}
 					onDisableFailedSite={handleDisableFailedSite}
 					onDisableAllFailedSites={requestDisableAllFailedSites}
+					onClearCoolingModel={handleClearCoolingModel}
 				/>
 			);
 		}

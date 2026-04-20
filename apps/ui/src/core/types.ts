@@ -13,6 +13,15 @@ export type SiteCallToken = {
 	priority?: number;
 };
 
+export type SiteCoolingModel = {
+	model: string;
+	last_err_at: number;
+	last_err_code: string | null;
+	last_err_count: number;
+	cooldown_count: number;
+	remaining_seconds: number;
+};
+
 export type Site = {
 	id: string;
 	name: string;
@@ -32,6 +41,9 @@ export type Site = {
 	last_checkin_message?: string | null;
 	last_checkin_at?: string | null;
 	verification?: SiteVerificationSummary | null;
+	cooling_models?: SiteCoolingModel[];
+	cooling_model_count?: number;
+	cooling_max_remaining_seconds?: number;
 	created_at?: string | null;
 	updated_at?: string | null;
 };

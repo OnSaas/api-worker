@@ -13,6 +13,7 @@ export type SiteSortKey =
 	| "status"
 	| "weight"
 	| "tokens"
+	| "cooldowns"
 	| "checkin_enabled"
 	| "checkin";
 
@@ -22,6 +23,8 @@ export type SiteSortState = {
 	key: SiteSortKey;
 	direction: SiteSortDirection;
 };
+
+export type SiteCooldownFilter = "all" | "cooling";
 
 export const SITE_TYPE_LABELS: Record<Site["site_type"], string> = {
 	"new-api": "New API",
@@ -37,6 +40,20 @@ export const getSiteTypeLabel = (siteType: Site["site_type"]) =>
 
 export const getSiteStatusLabel = (status: string) =>
 	status === "active" ? "启用" : "禁用";
+
+export const getSiteCoolingModelCount = (site: Site) =>
+	Number(site.cooling_model_count ?? site.cooling_models?.length ?? 0);
+
+export const getSiteCoolingMaxRemainingSeconds = (site: Site) =>
+	Number(
+		site.cooling_max_remaining_seconds ??
+			Math.max(
+				0,
+				...(site.cooling_models ?? []).map((item) =>
+					Number(item.remaining_seconds ?? 0),
+				),
+			),
+	);
 
 export const getVerificationStageTone = (status: VerificationStageStatus) => {
 	if (status === "pass") {
@@ -195,6 +212,16 @@ export const filterSites = (sites: Site[], query: string) => {
 	});
 };
 
+export const filterSitesByCooldown = (
+	sites: Site[],
+	filter: SiteCooldownFilter,
+) => {
+	if (filter !== "cooling") {
+		return sites;
+	}
+	return sites.filter((site) => getSiteCoolingModelCount(site) > 0);
+};
+
 const toSortableText = (value: string) => value.trim().toLowerCase();
 
 const getSortValue = (site: Site, key: SiteSortKey, today: string) => {
@@ -209,6 +236,11 @@ const getSortValue = (site: Site, key: SiteSortKey, today: string) => {
 			return Number(site.weight ?? 0);
 		case "tokens":
 			return Number(site.call_tokens?.length ?? 0);
+		case "cooldowns":
+			return (
+				getSiteCoolingModelCount(site) * 1_000_000 +
+				getSiteCoolingMaxRemainingSeconds(site)
+			);
 		case "checkin_enabled":
 			return site.site_type === "new-api"
 				? site.checkin_enabled
